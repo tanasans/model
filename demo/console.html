@@ -77,12 +77,12 @@ th{color:var(--muted); font-weight:700; white-space:nowrap}
           <option value="90">1時間30分</option>
           <option value="120">2時間</option>
         </select></div>
-      <div class="field"><label for="sOpen">受付開始</label><input type="time" id="sOpen" step="900"></div>
-      <div class="field"><label for="sClose">受付終了</label><input type="time" id="sClose" step="900"></div>
-      <div class="field"><label for="sLunchS">昼休み開始</label><input type="time" id="sLunchS" step="900"></div>
-      <div class="field"><label for="sLunchE">昼休み終了</label><input type="time" id="sLunchE" step="900"></div>
+      <div class="field"><label for="sOpen">受付開始</label><select id="sOpen"></select></div>
+      <div class="field"><label for="sClose">受付終了</label><select id="sClose"></select></div>
+      <div class="field"><label for="sLunchS">昼休み開始</label><select id="sLunchS"></select></div>
+      <div class="field"><label for="sLunchE">昼休み終了</label><select id="sLunchE"></select></div>
     </div>
-    <p class="hint">昼休みを空欄にすると、通しで枠を作ります。→ 作られる枠：<span id="sPreview" class="mono"></span></p>
+    <p class="hint">昼休みを「昼休みなし」にすると、通しで枠を作ります。→ 作られる枠：<span id="sPreview" class="mono"></span></p>
 
     <h3 class="sub">定休日</h3>
     <div id="sDays" class="days"></div>
@@ -139,9 +139,17 @@ th{color:var(--muted); font-weight:700; white-space:nowrap}
         <button type="button" id="kClear">×</button><button type="button" data-k="0">0</button><button type="button" id="kEnter">○</button>
       </div>
       <div class="field" style="margin-top:16px">
-        <label for="when">試す日時（時間帯の検証用）</label>
-        <input type="datetime-local" id="when">
-        <p class="hint">空欄なら「今」で判定します。予約時間の前後にずらすと、開かないことを確認できます。</p>
+        <label for="when">いつ試すか</label>
+        <select id="when">
+          <option value="now">いま</option>
+          <option value="before60">有効時間の1時間前</option>
+          <option value="before30">有効時間の30分前</option>
+          <option value="start">有効時間になった直後</option>
+          <option value="mid">見学時間のまん中</option>
+          <option value="end">有効時間が終わった直後</option>
+          <option value="after60">有効時間の1時間後</option>
+        </select>
+        <p class="hint">「いま」以外を選ぶと、入力した番号の有効時間を基準にその時刻へずらして判定します。</p>
       </div>
       <p class="notice" id="lockResult" hidden></p>
     </section>
@@ -171,9 +179,9 @@ th{color:var(--muted); font-weight:700; white-space:nowrap}
   <section class="card">
     <h2>受付を止める（臨時休業のテスト）</h2>
     <div class="inline">
-      <div class="field"><label for="bDate">日付</label><input type="date" id="bDate"></div>
-      <div class="field"><label for="bStart">開始（空欄=終日）</label><input type="time" id="bStart" step="3600"></div>
-      <div class="field"><label for="bEnd">終了</label><input type="time" id="bEnd" step="3600"></div>
+      <div class="field"><label for="bDate">日付</label><select id="bDate"></select></div>
+      <div class="field"><label for="bStart">開始</label><select id="bStart"></select></div>
+      <div class="field"><label for="bEnd">終了</label><select id="bEnd"></select></div>
       <div class="field"><button type="button" class="btn primary" id="bAdd">登録</button></div>
     </div>
     <table><tbody id="blockList"></tbody></table>
@@ -213,6 +221,25 @@ th{color:var(--muted); font-weight:700; white-space:nowrap}
     (u) => `<a href="${u}">${u}</a>`);
 
   /* ───── キーパッド ───── */
+
+  /** 選ばれた「いつ試すか」を、その番号の有効時間を基準にした実時刻へ直す。 */
+  function resolveWhen(passcode, mode) {
+    if (mode === 'now') return null;
+    const key = MRDemo.load().keys.find(k => k.passcode === passcode);
+    if (!key) return null;                       // 未登録の番号なら「いま」で判定
+    const from = new Date(key.from), to = new Date(key.to);
+    const shift = (d, m) => new Date(d.getTime() + m * 60000);
+    switch (mode) {
+      case 'before60': return shift(from, -60);
+      case 'before30': return shift(from, -30);
+      case 'start':    return shift(from, 1);
+      case 'mid':      return new Date((from.getTime() + to.getTime()) / 2);
+      case 'end':      return shift(to, 1);
+      case 'after60':  return shift(to, 60);
+      default:         return null;
+    }
+  }
+
   let buf = '';
   const draw = () => { $('#disp').textContent = buf.padEnd(6, '·'); };
 
@@ -227,8 +254,7 @@ th{color:var(--muted); font-weight:700; white-space:nowrap}
       box.className = 'notice warn'; box.textContent = '6桁を入力してください。'; box.hidden = false;
       return;
     }
-    const when = $('#when').value ? new Date($('#when').value) : null;
-    const res = MRDemo.tryUnlock(buf, when);
+    const res = MRDemo.tryUnlock(buf, resolveWhen(buf, $('#when').value));
     box.className = 'notice ' + (res.ok ? 'ok' : 'warn');
     box.textContent = res.ok
       ? `🔓 ${res.message}（${res.reservation ? res.reservation.name + ' 様のご予約' : ''}）`
@@ -314,10 +340,14 @@ th{color:var(--muted); font-weight:700; white-space:nowrap}
   $('#bAdd').addEventListener('click', () => {
     const date = $('#bDate').value;
     if (!date) return;
+    // 開始と終了のどちらかが未指定なら、その日は終日止める
+    const st = $('#bStart').value, et = $('#bEnd').value;
+    const whole = !st || !et || st >= et;
+
     const db = MRDemo.load();
-    db.blocks.push({ date, start_time: $('#bStart').value || null, end_time: $('#bEnd').value || null });
+    db.blocks.push({ date, start_time: whole ? null : st, end_time: whole ? null : et });
     MRDemo.save(db);
-    $('#bDate').value = $('#bStart').value = $('#bEnd').value = '';
+    $('#bStart').value = $('#bEnd').value = '';
     render();
   });
 
@@ -342,9 +372,28 @@ th{color:var(--muted); font-weight:700; white-space:nowrap}
   const toMin = (t) => { const [h,m] = String(t).split(':').map(Number); return h*60 + m; };
   const toHHMM = (m) => `${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
 
+  /**
+   * 時刻の選択肢を作る。
+   * ブラウザ標準の時刻入力は環境によって確定しづらいので、プルダウンにしている。
+   */
+  function fillTimeOptions(sel, blankLabel) {
+    const opts = [];
+    if (blankLabel) opts.push(`<option value="">${blankLabel}</option>`);
+    for (let m = 7 * 60; m <= 22 * 60; m += 15) {
+      opts.push(`<option value="${toHHMM(m)}">${toHHMM(m)}</option>`);
+    }
+    sel.innerHTML = opts.join('');
+  }
+
   /** いまの start_times から、営業時間と昼休みを推測して入力欄に入れる。 */
   function fillSettingsForm() {
     const b = MRDemo.CONF.booking;
+
+    fillTimeOptions($('#sOpen'));
+    fillTimeOptions($('#sClose'));
+    fillTimeOptions($('#sLunchS'), '昼休みなし');
+    fillTimeOptions($('#sLunchE'), '昼休みなし');
+
     $('#sSlot').value    = b.slot_minutes;
     $('#sLead').value    = b.lead_hours;
     $('#sHorizon').value = b.horizon_days;
@@ -525,6 +574,15 @@ th{color:var(--muted); font-weight:700; white-space:nowrap}
   });
 
   fillSettingsForm();
+  fillTimeOptions($('#bStart'), '終日');
+  fillTimeOptions($('#bEnd'), '終日');
+
+  // 受付停止の日付も、カレンダーを開かずに選べるようにする
+  $('#bDate').innerHTML = Array.from({ length: 31 }, (_, i) => {
+    const d = new Date(); d.setDate(d.getDate() + i);
+    const v = MRDemo.ymd(d);
+    return `<option value="${v}">${MRDemo.dateLabel(v)}</option>`;
+  }).join('');
   draw();
   render();
 })();
