@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>ご予約のキャンセル（デモ）</title>
+<link rel="stylesheet" href="../public/assets/style.css">
+<link rel="stylesheet" href="demo.css">
+</head>
+<body>
+<div class="demobar">これはデモです。本番ではこの画面が <code>cancel.php</code> として動きます。<a href="console.html">デモ管理卓へ</a></div>
+
+<main class="wrap narrow">
+  <h1>ご予約のキャンセル</h1>
+  <div id="app"><p class="hint">読み込んでいます…</p></div>
+  <p class="hint" id="foot"></p>
+</main>
+
+<script src="demo-api.js"></script>
+<script>
+(() => {
+  'use strict';
+  const $ = (s) => document.querySelector(s);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  const q = new URLSearchParams(location.search);
+  const code = q.get('code') || '';
+  const token = q.get('t') || '';
+
+  $('#foot').textContent = `${MRDemo.CONF.site.company}　TEL: ${MRDemo.CONF.site.tel}`;
+
+  const r = MRDemo.findByCode(code);
+  const valid = r && r.cancel_token === token;
+
+  function summary(res, statusText) {
+    return `
+      <dl class="summary">
+        <dt>ご予約番号</dt><dd>${esc(res.code)}</dd>
+        <dt>お名前</dt>    <dd>${esc(res.name)} 様</dd>
+        <dt>ご見学日時</dt><dd>${esc(MRDemo.dateLabel(res.date))} ${esc(res.start_time)}〜${esc(res.end_time)}</dd>
+        <dt>状態</dt>      <dd>${esc(statusText)}</dd>
+      </dl>`;
+  }
+
+  function render() {
+    if (!valid) {
+      $('#app').innerHTML = `<p class="notice warn">ご予約が確認できませんでした。お手数ですがお電話にてご連絡ください。</p>
+        <p class="hint">（デモでは、管理卓の「送信されたメール」に載っているキャンセル用リンクからお試しください）</p>`;
+      return;
+    }
+    const cur = MRDemo.findByCode(code);
+
+    if (cur.status === 'cancelled') {
+      $('#app').innerHTML = `<p class="notice ok">このご予約はキャンセル済みです。発行済みのパスコードは無効になっています。</p>`
+        + summary(cur, 'キャンセル済み');
+      return;
+    }
+
+    $('#app').innerHTML = summary(cur, 'ご予約済み') + `
+      <div id="area">
+        <button type="button" class="btn danger" id="ask">このご予約をキャンセルする</button>
+        <p class="hint">キャンセル後、再度ご希望の場合はお手数ですが改めてご予約ください。</p>
+      </div>`;
+
+    // 取り消しの前に必ず確認をはさむ
+    $('#ask').addEventListener('click', () => {
+      $('#area').innerHTML = `
+        <div class="notice warn">
+          このご予約をキャンセルします。よろしいですか？<br>
+          発行済みの入室パスコードは、この操作で使えなくなります。
+          <div class="actions" style="margin-top:12px">
+            <button type="button" class="btn" id="no">やめる</button>
+            <button type="button" class="btn danger" id="yes" style="width:auto">キャンセルを確定する</button>
+          </div>
+        </div>`;
+      $('#no').addEventListener('click', render);
+      $('#yes').addEventListener('click', () => {
+        const res = MRDemo.cancelByToken(code, token);
+        if (res.ok) {
+          $('#app').innerHTML =
+            `<p class="notice ok">ご予約をキャンセルいたしました。発行済みのパスコードは無効になりました。</p>`
+            + summary(MRDemo.findByCode(code), 'キャンセル済み')
+            + `<p class="hint">キャンセルのお知らせメールをお送りしました（デモでは管理卓でご確認いただけます）。</p>`;
+        } else {
+          $('#app').innerHTML = `<p class="notice warn">${esc(res.error)}</p>`
+            + (res.reservation ? summary(res.reservation, 'ご予約済み') : '');
+        }
+      });
+    });
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>

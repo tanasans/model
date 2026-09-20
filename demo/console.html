@@ -1,0 +1,533 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>デモ管理卓｜モデルルーム見学予約</title>
+<link rel="stylesheet" href="../public/assets/style.css">
+<link rel="stylesheet" href="demo.css">
+<style>
+table{width:100%; border-collapse:collapse; font-size:.85rem}
+th,td{border-bottom:1px solid var(--line); padding:8px 6px; text-align:left; vertical-align:top}
+th{color:var(--muted); font-weight:700; white-space:nowrap}
+.mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+.tag{display:inline-block; padding:1px 7px; border-radius:4px; font-size:.72rem; font-weight:700}
+.tag.ok{background:#eaf3ed; color:var(--ok)}
+.tag.ng{background:#fbeeea; color:var(--warn)}
+.tag.mid{background:#f2efe8; color:var(--muted)}
+.keypad{display:grid; grid-template-columns:repeat(3,1fr); gap:8px; max-width:260px; margin:0 auto}
+.keypad button{
+  padding:16px 0; font-size:1.2rem; font-weight:700; font-family:inherit;
+  border:1px solid var(--line); border-radius:10px; background:#fff; cursor:pointer;
+}
+.keypad button:active{background:#f0ece4}
+.keypad .wide{grid-column:span 1}
+.display{
+  text-align:center; font-family:ui-monospace,Menlo,Consolas,monospace;
+  font-size:2rem; letter-spacing:.35em; padding:14px; margin:0 auto 12px;
+  max-width:260px; background:#2d2a25; color:#8ff0a4; border-radius:10px; min-height:1.4em;
+}
+.mail{border:1px solid var(--line); border-radius:10px; margin-bottom:10px; overflow:hidden}
+.mail summary{padding:10px 12px; cursor:pointer; font-size:.86rem; background:#fbfaf8}
+.mail pre{
+  margin:0; padding:14px; font-size:.8rem; line-height:1.7; white-space:pre-wrap;
+  font-family:inherit; border-top:1px solid var(--line);
+}
+.two{display:grid; gap:16px}
+@media(min-width:760px){ .two{grid-template-columns:1fr 1fr} }
+.logline{font-size:.78rem; color:var(--muted); border-bottom:1px solid var(--line); padding:5px 0}
+.inline{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; align-items:end}
+.sub{font-size:.9rem; margin:22px 0 10px; padding-bottom:4px; border-bottom:1px solid var(--line)}
+.days{display:flex; flex-wrap:wrap; gap:14px; font-size:.85rem}
+.days label{display:flex; align-items:center; gap:5px}
+.export{
+  background:#2d2a25; color:#e8e2d6; padding:14px; border-radius:8px; overflow:auto;
+  font-size:.75rem; line-height:1.6; white-space:pre; max-height:340px;
+}
+#sSurvey input[type=text]{padding:6px 8px; font-size:.82rem}
+#sSurvey td{vertical-align:middle}
+</style>
+</head>
+<body>
+<div class="demobar">デモ管理卓（ブラウザ内だけで動いています）<a href="index.html">予約フォームへ戻る</a></div>
+
+<main class="wrap" style="max-width:1000px">
+  <h1>デモ管理卓</h1>
+  <p class="lead">
+    実際のサーバーやSwitchBotを使わずに、予約の流れ・二重予約のはじき方・パスコードの有効時間を確認できます。
+    データはこのブラウザの中だけに保存されます。
+  </p>
+
+  <!-- 打ち合わせ用の設定パネル -->
+  <section class="card" id="settings">
+    <h2>設定を試す（打ち合わせ用）</h2>
+    <p class="hint">
+      ここを変えて「この設定で試す」を押すと、予約フォームの見え方がその場で変わります。
+      決まった内容は下の「設定の書き出し」からそのまま本番に反映できます。
+    </p>
+
+    <h3 class="sub">見学枠</h3>
+    <div class="inline">
+      <div class="field"><label for="sSlot">1枠の長さ</label>
+        <select id="sSlot">
+          <option value="30">30分</option>
+          <option value="45">45分</option>
+          <option value="60">1時間</option>
+          <option value="90">1時間30分</option>
+          <option value="120">2時間</option>
+        </select></div>
+      <div class="field"><label for="sOpen">受付開始</label><input type="time" id="sOpen" step="900"></div>
+      <div class="field"><label for="sClose">受付終了</label><input type="time" id="sClose" step="900"></div>
+      <div class="field"><label for="sLunchS">昼休み開始</label><input type="time" id="sLunchS" step="900"></div>
+      <div class="field"><label for="sLunchE">昼休み終了</label><input type="time" id="sLunchE" step="900"></div>
+    </div>
+    <p class="hint">昼休みを空欄にすると、通しで枠を作ります。→ 作られる枠：<span id="sPreview" class="mono"></span></p>
+
+    <h3 class="sub">定休日</h3>
+    <div id="sDays" class="days"></div>
+
+    <h3 class="sub">受付の範囲</h3>
+    <div class="inline">
+      <div class="field"><label for="sLead">何時間前まで受け付けるか</label><input type="number" id="sLead" min="0" max="168"></div>
+      <div class="field"><label for="sHorizon">何日先まで受け付けるか</label><input type="number" id="sHorizon" min="1" max="365"></div>
+      <div class="field"><label for="sParty">ご来場人数の上限</label><input type="number" id="sParty" min="1" max="20"></div>
+      <div class="field"><label for="sBefore">解錠 何分前から</label><input type="number" id="sBefore" min="0" max="60"></div>
+      <div class="field"><label for="sAfter">解錠 何分後まで</label><input type="number" id="sAfter" min="0" max="60"></div>
+    </div>
+    <p class="notice warn" id="sWarn" hidden></p>
+
+    <h3 class="sub">アンケートの設問</h3>
+    <table><tbody id="sSurvey"></tbody></table>
+    <div class="inline" style="margin-top:10px">
+      <div class="field"><label for="qLabel">設問を追加</label><input type="text" id="qLabel" placeholder="例）お子様の人数"></div>
+      <div class="field"><label for="qType">種類</label>
+        <select id="qType">
+          <option value="select">選択式</option>
+          <option value="text">自由記入（1行）</option>
+          <option value="textarea">自由記入（複数行）</option>
+        </select></div>
+      <div class="field"><label for="qOpts">選択肢（読点または半角カンマ区切り）</label><input type="text" id="qOpts" placeholder="いない、1人、2人以上"></div>
+      <div class="field"><button type="button" class="btn" id="qAdd">追加</button></div>
+    </div>
+    <div id="qConfirm"></div>
+
+    <div class="actions" style="margin-top:20px">
+      <button type="button" class="btn" id="sReset">初期設定に戻す</button>
+      <button type="button" class="btn primary" id="sApply">この設定で試す</button>
+    </div>
+    <p class="notice ok" id="sDone" hidden></p>
+
+    <details style="margin-top:18px">
+      <summary style="cursor:pointer; font-size:.88rem; font-weight:700">設定の書き出し（本番の config.php に貼る内容）</summary>
+      <p class="hint">決まった設定をそのまま <code>app/config.php</code> に貼り付けられます。</p>
+      <pre id="sExport" class="export"></pre>
+      <button type="button" class="btn" id="sCopy">コピーする</button>
+    </details>
+  </section>
+
+  <div class="two">
+    <!-- 玄関のキーパッド -->
+    <section class="card">
+      <h2>玄関のキーパッド（模擬）</h2>
+      <p class="hint">メールに載っていた6桁を入力して「○」を押してください。予約の時間帯以外では開かないことを確認できます。</p>
+      <div class="display" id="disp"></div>
+      <div class="keypad">
+        <button type="button" data-k="1">1</button><button type="button" data-k="2">2</button><button type="button" data-k="3">3</button>
+        <button type="button" data-k="4">4</button><button type="button" data-k="5">5</button><button type="button" data-k="6">6</button>
+        <button type="button" data-k="7">7</button><button type="button" data-k="8">8</button><button type="button" data-k="9">9</button>
+        <button type="button" id="kClear">×</button><button type="button" data-k="0">0</button><button type="button" id="kEnter">○</button>
+      </div>
+      <div class="field" style="margin-top:16px">
+        <label for="when">試す日時（時間帯の検証用）</label>
+        <input type="datetime-local" id="when">
+        <p class="hint">空欄なら「今」で判定します。予約時間の前後にずらすと、開かないことを確認できます。</p>
+      </div>
+      <p class="notice" id="lockResult" hidden></p>
+    </section>
+
+    <!-- 発行済みパスコード -->
+    <section class="card">
+      <h2>ロックに登録されているパスコード</h2>
+      <table>
+        <thead><tr><th>番号</th><th>有効時間</th><th>状態</th></tr></thead>
+        <tbody id="keyList"></tbody>
+      </table>
+      <p class="hint">本番ではここが SwitchBot のロック本体に登録されます。見学終了後はcronが自動で削除します。</p>
+    </section>
+  </div>
+
+  <!-- 予約一覧 -->
+  <section class="card">
+    <h2>予約一覧</h2>
+    <div id="cancelConfirm"></div>
+    <table>
+      <thead><tr><th>日時</th><th>お客様</th><th>人数</th><th>パスコード</th><th>状態</th><th></th></tr></thead>
+      <tbody id="resList"></tbody>
+    </table>
+  </section>
+
+  <!-- 受付停止 -->
+  <section class="card">
+    <h2>受付を止める（臨時休業のテスト）</h2>
+    <div class="inline">
+      <div class="field"><label for="bDate">日付</label><input type="date" id="bDate"></div>
+      <div class="field"><label for="bStart">開始（空欄=終日）</label><input type="time" id="bStart" step="3600"></div>
+      <div class="field"><label for="bEnd">終了</label><input type="time" id="bEnd" step="3600"></div>
+      <div class="field"><button type="button" class="btn primary" id="bAdd">登録</button></div>
+    </div>
+    <table><tbody id="blockList"></tbody></table>
+  </section>
+
+  <!-- メール -->
+  <section class="card">
+    <h2>送信されたメール（実際には送られていません）</h2>
+    <div id="mailList"></div>
+  </section>
+
+  <!-- ログ -->
+  <section class="card">
+    <h2>ログ</h2>
+    <div id="logList"></div>
+  </section>
+
+  <!-- 初期化 -->
+  <section class="card">
+    <h2>デモデータの初期化</h2>
+    <div id="resetArea">
+      <p class="hint">予約・パスコード・メール・ログをすべて消して、最初の状態に戻します。</p>
+      <button type="button" class="btn" id="resetAsk">初期化する</button>
+    </div>
+  </section>
+</main>
+
+<script src="demo-api.js"></script>
+<script>
+(() => {
+  'use strict';
+  const $ = (s) => document.querySelector(s);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const fmt = (iso) => new Date(iso).toLocaleString('ja-JP', { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' });
+  // メール本文のキャンセルURLは、そのまま押せるようにリンクにする
+  const linkify = (html) => html.replace(/cancel\.html\?[^\s<]+/g,
+    (u) => `<a href="${u}">${u}</a>`);
+
+  /* ───── キーパッド ───── */
+  let buf = '';
+  const draw = () => { $('#disp').textContent = buf.padEnd(6, '·'); };
+
+  document.querySelectorAll('.keypad [data-k]').forEach(b =>
+    b.addEventListener('click', () => { if (buf.length < 6) { buf += b.dataset.k; draw(); } }));
+
+  $('#kClear').addEventListener('click', () => { buf = ''; draw(); $('#lockResult').hidden = true; });
+
+  $('#kEnter').addEventListener('click', () => {
+    const box = $('#lockResult');
+    if (buf.length !== 6) {
+      box.className = 'notice warn'; box.textContent = '6桁を入力してください。'; box.hidden = false;
+      return;
+    }
+    const when = $('#when').value ? new Date($('#when').value) : null;
+    const res = MRDemo.tryUnlock(buf, when);
+    box.className = 'notice ' + (res.ok ? 'ok' : 'warn');
+    box.textContent = res.ok
+      ? `🔓 ${res.message}（${res.reservation ? res.reservation.name + ' 様のご予約' : ''}）`
+      : `🔒 ${res.message}`;
+    box.hidden = false;
+    buf = ''; draw();
+    render();
+  });
+
+  /* ───── 一覧の描画 ───── */
+  function render() {
+    const db = MRDemo.load();
+
+    $('#keyList').innerHTML = db.keys.length ? db.keys.map(k => `
+      <tr><td class="mono">${esc(k.passcode)}</td>
+      <td>${fmt(k.from)} 〜 ${fmt(k.to)}</td>
+      <td>${k.status === 'issued' ? '<span class="tag ok">有効</span>' : '<span class="tag mid">無効</span>'}</td></tr>`).join('')
+      : '<tr><td colspan="3" class="hint">まだありません。</td></tr>';
+
+    $('#resList').innerHTML = db.reservations.length ? db.reservations
+      .slice().sort((a,b) => (a.date+a.start_time).localeCompare(b.date+b.start_time))
+      .map(r => `
+      <tr>
+        <td>${esc(r.date)}<br>${esc(r.start_time)}〜${esc(r.end_time)}<div class="hint mono">${esc(r.code)}</div></td>
+        <td>${esc(r.name)} 様<div class="hint">${esc(r.email)}</div></td>
+        <td>${esc(r.party_size)}</td>
+        <td class="mono">${esc(r.passcode)}</td>
+        <td>${r.status === 'confirmed' ? '<span class="tag ok">予約済</span>' : '<span class="tag ng">取消</span>'}</td>
+        <td>${r.status === 'confirmed' ? `<button type="button" class="btn" data-cancel="${esc(r.code)}" style="font-size:.75rem;padding:4px 8px">取消</button>` : ''}</td>
+      </tr>`).join('')
+      : '<tr><td colspan="6" class="hint">まだ予約はありません。フォームから入れてみてください。</td></tr>';
+
+    document.querySelectorAll('[data-cancel]').forEach(b =>
+      b.addEventListener('click', () => askCancel(b.dataset.cancel)));
+
+    $('#blockList').innerHTML = db.blocks.map((x, i) => `
+      <tr><td>${esc(x.date)}</td>
+      <td>${x.start_time ? esc(x.start_time) + '〜' + esc(x.end_time) : '終日'}</td>
+      <td><button type="button" class="btn" data-block="${i}" style="font-size:.75rem;padding:4px 8px">解除</button></td></tr>`).join('');
+
+    document.querySelectorAll('[data-block]').forEach(b =>
+      b.addEventListener('click', () => {
+        const d = MRDemo.load();
+        d.blocks.splice(Number(b.dataset.block), 1);
+        MRDemo.save(d); render();
+      }));
+
+    $('#mailList').innerHTML = db.mails.length ? db.mails.map(m => `
+      <details class="mail">
+        <summary><strong>${esc(m.subject)}</strong><div class="hint">宛先: ${esc(m.to)}　${esc(m.ts)}</div></summary>
+        <pre>${linkify(esc(m.body))}</pre>
+      </details>`).join('')
+      : '<p class="hint">まだメールはありません。</p>';
+
+    $('#logList').innerHTML = db.logs.length
+      ? db.logs.map(l => `<div class="logline">${esc(l.ts)}　[${esc(l.level)}]　${esc(l.event)}　${esc(l.ref)}　${esc(l.message)}</div>`).join('')
+      : '<p class="hint">まだログはありません。</p>';
+  }
+
+  /* ───── 取消は確認画面をはさむ ───── */
+  function askCancel(code) {
+    const r = MRDemo.load().reservations.find(x => x.code === code);
+    if (!r) return;
+    $('#cancelConfirm').innerHTML = `
+      <div class="notice warn">
+        <strong>${esc(r.date)} ${esc(r.start_time)}　${esc(r.name)} 様</strong> のご予約をキャンセルします。<br>
+        発行済みのパスコード ${esc(r.passcode)} は無効になります。よろしいですか？
+        <div class="actions" style="margin-top:12px">
+          <button type="button" class="btn" id="cNo">やめる</button>
+          <button type="button" class="btn primary" id="cYes">キャンセルを実行する</button>
+        </div>
+      </div>`;
+    $('#cNo').addEventListener('click', () => { $('#cancelConfirm').innerHTML = ''; });
+    $('#cYes').addEventListener('click', () => {
+      MRDemo.cancel(code);
+      $('#cancelConfirm').innerHTML = '<p class="notice ok">キャンセルしました。パスコードも無効になりました。</p>';
+      render();
+    });
+    $('#cancelConfirm').scrollIntoView({ behavior:'smooth', block:'center' });
+  }
+
+  /* ───── 受付停止 ───── */
+  $('#bAdd').addEventListener('click', () => {
+    const date = $('#bDate').value;
+    if (!date) return;
+    const db = MRDemo.load();
+    db.blocks.push({ date, start_time: $('#bStart').value || null, end_time: $('#bEnd').value || null });
+    MRDemo.save(db);
+    $('#bDate').value = $('#bStart').value = $('#bEnd').value = '';
+    render();
+  });
+
+  /* ───── 初期化も確認画面をはさむ ───── */
+  $('#resetAsk').addEventListener('click', () => {
+    $('#resetArea').innerHTML = `
+      <div class="notice warn">デモのデータをすべて消します。よろしいですか？
+        <div class="actions" style="margin-top:12px">
+          <button type="button" class="btn" id="rNo">やめる</button>
+          <button type="button" class="btn primary" id="rYes">すべて消す</button>
+        </div>
+      </div>`;
+    $('#rNo').addEventListener('click', () => location.reload());
+    $('#rYes').addEventListener('click', () => { MRDemo.reset(); location.reload(); });
+  });
+
+  /* ───── 設定パネル ───── */
+
+  const WD = ['日','月','火','水','木','金','土'];
+  let sv = [];   // 編集中のアンケート設問
+
+  const toMin = (t) => { const [h,m] = String(t).split(':').map(Number); return h*60 + m; };
+  const toHHMM = (m) => `${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
+
+  /** いまの start_times から、営業時間と昼休みを推測して入力欄に入れる。 */
+  function fillSettingsForm() {
+    const b = MRDemo.CONF.booking;
+    $('#sSlot').value    = b.slot_minutes;
+    $('#sLead').value    = b.lead_hours;
+    $('#sHorizon').value = b.horizon_days;
+    $('#sParty').value   = b.max_party_size;
+    $('#sBefore').value  = b.buffer_before;
+    $('#sAfter').value   = b.buffer_after;
+
+    const mins = b.start_times.map(toMin).sort((a, x) => a - x);
+    $('#sOpen').value  = toHHMM(mins[0]);
+    $('#sClose').value = toHHMM(mins[mins.length - 1] + b.slot_minutes);
+
+    // 連続していないところを昼休みとみなす
+    let gapS = '', gapE = '';
+    for (let i = 1; i < mins.length; i++) {
+      if (mins[i] - mins[i - 1] > b.slot_minutes) {
+        gapS = toHHMM(mins[i - 1] + b.slot_minutes);
+        gapE = toHHMM(mins[i]);
+        break;
+      }
+    }
+    $('#sLunchS').value = gapS;
+    $('#sLunchE').value = gapE;
+
+    $('#sDays').innerHTML = WD.map((w, i) => `
+      <label><input type="checkbox" class="dayck" value="${i}"
+        ${b.open_days.includes(i) ? 'checked' : ''}>${w}曜</label>`).join('')
+      + '<span class="hint">チェックを外した曜日が定休日になります</span>';
+
+    sv = JSON.parse(JSON.stringify(MRDemo.CONF.survey));
+    renderSurvey();
+    previewSlots();
+  }
+
+  function collectBooking() {
+    const minutes = Number($('#sSlot').value);
+    const times = MRDemo.buildStartTimes(
+      $('#sOpen').value || '10:00',
+      $('#sClose').value || '17:00',
+      minutes,
+      $('#sLunchS').value,
+      $('#sLunchE').value
+    );
+    return {
+      slot_minutes: minutes,
+      start_times: times,
+      open_days: [...document.querySelectorAll('.dayck:checked')].map(c => Number(c.value)),
+      lead_hours: Math.max(0, Number($('#sLead').value) || 0),
+      horizon_days: Math.max(1, Number($('#sHorizon').value) || 30),
+      max_party_size: Math.max(1, Number($('#sParty').value) || 6),
+      buffer_before: Math.max(0, Number($('#sBefore').value) || 0),
+      buffer_after: Math.max(0, Number($('#sAfter').value) || 0),
+    };
+  }
+
+  function previewSlots() {
+    const b = collectBooking();
+    $('#sPreview').textContent = b.start_times.length
+      ? b.start_times.join('  ') + `（1日 ${b.start_times.length} 枠）`
+      : '（枠がありません）';
+
+    const warn = $('#sWarn');
+    const msgs = [];
+    if (!b.start_times.length) msgs.push('受付開始・終了と枠の長さの組み合わせでは、枠が1つも作れません。');
+    if (!b.open_days.length)   msgs.push('すべての曜日が定休日になっています。');
+    if (b.horizon_days > 60)   msgs.push('受付期間が長いと、SwitchBotに登録できるパスコードの上限に近づきます。60日を超える場合は、パスコードの登録を「前日のcronでまとめて」に変える必要があります。');
+    warn.innerHTML = msgs.join('<br>');
+    warn.hidden = !msgs.length;
+
+    $('#sExport').textContent = MRDemo.exportConfig();
+  }
+
+  function renderSurvey() {
+    $('#sSurvey').innerHTML = sv.map((q, i) => `
+      <tr>
+        <td><input type="text" data-sv="${i}" data-f="label" value="${esc(q.label)}" style="width:100%"></td>
+        <td class="hint">${q.type === 'select' ? '選択式' : (q.type === 'textarea' ? '自由記入(複数行)' : '自由記入')}</td>
+        <td>${q.type === 'select'
+          ? `<input type="text" data-sv="${i}" data-f="options" value="${esc((q.options||[]).join('、'))}" style="width:100%">`
+          : '<span class="hint">—</span>'}</td>
+        <td style="white-space:nowrap"><label class="hint"><input type="checkbox" data-sv="${i}" data-f="required" ${q.required ? 'checked' : ''}> 必須</label></td>
+        <td><button type="button" class="btn" data-del="${i}" style="font-size:.75rem;padding:4px 8px">削除</button></td>
+      </tr>`).join('') || '<tr><td class="hint">設問がありません。</td></tr>';
+
+    document.querySelectorAll('[data-sv]').forEach(el => {
+      el.addEventListener('change', () => {
+        const q = sv[Number(el.dataset.sv)];
+        if (el.dataset.f === 'required')      q.required = el.checked;
+        else if (el.dataset.f === 'options')  q.options = el.value.split(/[、,]/).map(s => s.trim()).filter(Boolean);
+        else                                  q.label = el.value;
+        previewSlots();
+      });
+    });
+
+    // 削除も確認をはさむ
+    document.querySelectorAll('[data-del]').forEach(b =>
+      b.addEventListener('click', () => {
+        const i = Number(b.dataset.del);
+        $('#qConfirm').innerHTML = `
+          <div class="notice warn">「${esc(sv[i].label)}」を設問から外します。よろしいですか？
+            <div class="actions" style="margin-top:10px">
+              <button type="button" class="btn" id="qNo">やめる</button>
+              <button type="button" class="btn primary" id="qYes">外す</button>
+            </div>
+          </div>`;
+        $('#qNo').addEventListener('click', () => { $('#qConfirm').innerHTML = ''; });
+        $('#qYes').addEventListener('click', () => {
+          sv.splice(i, 1);
+          $('#qConfirm').innerHTML = '';
+          renderSurvey();
+        });
+      }));
+  }
+
+  $('#qAdd').addEventListener('click', () => {
+    const label = $('#qLabel').value.trim();
+    if (!label) return;
+    const type = $('#qType').value;
+    const opts = $('#qOpts').value.split(/[、,]/).map(s => s.trim()).filter(Boolean);
+    if (type === 'select' && !opts.length) {
+      $('#qConfirm').innerHTML = '<p class="notice warn">選択式の設問には選択肢が必要です。</p>';
+      return;
+    }
+    sv.push({
+      key: 'q' + Date.now().toString(36),
+      label, type, required: false,
+      options: type === 'select' ? opts : [],
+    });
+    $('#qLabel').value = ''; $('#qOpts').value = '';
+    $('#qConfirm').innerHTML = '';
+    renderSurvey();
+  });
+
+  ['#sSlot','#sOpen','#sClose','#sLunchS','#sLunchE','#sLead','#sHorizon','#sParty','#sBefore','#sAfter']
+    .forEach(s => $(s).addEventListener('change', previewSlots));
+  $('#sDays').addEventListener('change', previewSlots);
+
+  $('#sApply').addEventListener('click', () => {
+    MRDemo.saveSettings({ booking: collectBooking(), survey: sv });
+    previewSlots();
+    const box = $('#sDone');
+    box.innerHTML = 'この設定に切り替えました。<a href="index.html">予約フォームで確認する</a>'
+      + '<br><span class="hint">枠の時間を変えたときは、下の「デモデータの初期化」で古い予約を消すと見やすくなります。</span>';
+    box.hidden = false;
+    render();
+  });
+
+  // 初期設定に戻すのも確認をはさむ
+  $('#sReset').addEventListener('click', () => {
+    $('#sDone').innerHTML = `設定を初めの状態に戻します。よろしいですか？
+      <div class="actions" style="margin-top:10px">
+        <button type="button" class="btn" id="srNo">やめる</button>
+        <button type="button" class="btn primary" id="srYes">戻す</button>
+      </div>`;
+    $('#sDone').className = 'notice warn';
+    $('#sDone').hidden = false;
+    $('#srNo').addEventListener('click', () => { $('#sDone').hidden = true; $('#sDone').className = 'notice ok'; });
+    $('#srYes').addEventListener('click', () => {
+      MRDemo.resetSettings();
+      fillSettingsForm();
+      $('#sDone').className = 'notice ok';
+      $('#sDone').textContent = '初期設定に戻しました。';
+    });
+  });
+
+  $('#sCopy').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(MRDemo.exportConfig());
+      $('#sCopy').textContent = 'コピーしました';
+      setTimeout(() => { $('#sCopy').textContent = 'コピーする'; }, 2000);
+    } catch (e) {
+      // クリップボードが使えない環境では、選択状態にして手動コピーしてもらう
+      const range = document.createRange();
+      range.selectNodeContents($('#sExport'));
+      const sel = window.getSelection();
+      sel.removeAllRanges(); sel.addRange(range);
+      $('#sCopy').textContent = '選択しました（Ctrl+Cでコピー）';
+    }
+  });
+
+  fillSettingsForm();
+  draw();
+  render();
+})();
+</script>
+</body>
+</html>

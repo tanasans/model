@@ -1,0 +1,6 @@
+/* デモ専用の見た目（本番には含めない） */
+.demobar{
+  background:#3c3831; color:#f3efe7; text-align:center;
+  padding:8px 16px; font-size:.82rem;
+}
+.demobar a{color:#e8d6b4; margin-left:10px}

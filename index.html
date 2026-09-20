@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>モデルルーム見学予約システム デモ</title>
+<link rel="stylesheet" href="public/assets/style.css">
+</head>
+<body>
+<main class="wrap narrow">
+  <h1>モデルルーム見学予約システム</h1>
+  <p class="lead">
+    サーバーやSwitchBotを使わずに、動きだけを確かめるためのデモです。<br>
+    予約データはご覧になっているブラウザの中だけに保存され、メールは送られず、鍵も動きません。
+  </p>
+
+  <div class="card">
+    <h2>① 予約フォーム</h2>
+    <p class="hint">お客様が実際にご覧になる画面です。空き枠の表示から予約完了までを試せます。</p>
+    <p><a class="btn primary" href="demo/index.html">予約フォームを開く</a></p>
+  </div>
+
+  <div class="card">
+    <h2>② デモ管理卓</h2>
+    <p class="hint">
+      送られるはずのメールの文面、ロックに登録されたパスコードと有効時間、予約の取消などを確認できます。
+      玄関のキーパッドを模した画面で、<strong>時間帯の外では開かないこと</strong>も試せます。
+    </p>
+    <p><a class="btn primary" href="demo/console.html">デモ管理卓を開く</a></p>
+  </div>
+
+  <div class="card">
+    <h2>③ 仕様を決める「設定を試す」パネル</h2>
+    <p class="hint">
+      デモ管理卓のいちばん上にあります。枠の長さ・営業時間・定休日・受付期間・アンケートの設問を
+      その場で切り替えて、<strong>予約フォームの見え方がどう変わるか</strong>を確かめられます。
+      決まった内容は「設定の書き出し」からそのまま本番の設定ファイルに貼り付けられます。
+    </p>
+    <p><a class="btn" href="demo/console.html#settings">設定パネルを開く</a></p>
+  </div>
+
+  <div class="card">
+    <h2>試していただきたいこと</h2>
+    <ol style="font-size:.9rem; padding-left:1.3em">
+      <li>予約フォームから1件予約する</li>
+      <li>管理卓で「送信されたメール」を開き、パスコードを確認する</li>
+      <li>キーパッドにその番号を入れて「○」を押す（解錠されます）</li>
+      <li>「試す日時」を予約時間の1時間前にして、もう一度押す（開きません）</li>
+      <li>予約フォームに戻り、<strong>同じ日時をもう一度</strong>予約する（エラーと空き時間の候補が出ます）</li>
+      <li>メール本文の末尾にある<strong>キャンセル用リンク</strong>を押す（お客様ご自身のキャンセル画面が開きます）</li>
+      <li>キャンセル後、同じ番号でもう一度キーパッドを押してみる（無効になっています）</li>
+    </ol>
+  </div>
+
+  <p class="hint">
+    本番はさくらインターネット上のPHPで動き、パスコードはSwitchBotのロックへ、
+    顧客情報とログはGoogleスプレッドシートへ記録されます。
+  </p>
+</main>
+</body>
+</html>

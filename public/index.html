@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>モデルルーム見学予約</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<main class="wrap">
+
+  <header class="head">
+    <h1 id="siteName">モデルルーム見学予約</h1>
+    <p class="lead">
+      ご希望の日時をお選びください。ご予約後、入室用のパスコードをメールでお送りします。<br>
+      スタッフは常駐しておりませんので、ごゆっくりご覧いただけます。
+    </p>
+  </header>
+
+  <ol class="steps" id="steps">
+    <li class="on" data-step="1">日時を選ぶ</li>
+    <li data-step="2">お客様情報</li>
+    <li data-step="3">確認</li>
+    <li data-step="4">完了</li>
+  </ol>
+
+  <!-- ステップ1: 日時選択 -->
+  <section class="card" id="step1">
+    <div class="navbar">
+      <button type="button" class="btn ghost" id="prevWeek">← 前の週</button>
+      <span id="rangeLabel" class="range"></span>
+      <button type="button" class="btn ghost" id="nextWeek">次の週 →</button>
+    </div>
+    <div id="calendar" class="calendar" aria-live="polite">
+      <p class="hint">空き状況を読み込んでいます…</p>
+    </div>
+    <p class="legend">
+      <span class="chip free">空き</span>
+      <span class="chip busy">ご予約済み</span>
+      <span class="chip na">受付対象外</span>
+    </p>
+  </section>
+
+  <!-- ステップ2: お客様情報 -->
+  <section class="card hidden" id="step2">
+    <p class="chosen" id="chosenSlot"></p>
+    <form id="form" novalidate>
+      <div class="field">
+        <label for="name">お名前 <span class="req">必須</span></label>
+        <input type="text" id="name" name="name" autocomplete="name" maxlength="60" required>
+      </div>
+      <div class="field">
+        <label for="kana">フリガナ</label>
+        <input type="text" id="kana" name="kana" maxlength="60">
+      </div>
+      <div class="field">
+        <label for="email">メールアドレス <span class="req">必須</span></label>
+        <input type="email" id="email" name="email" autocomplete="email" maxlength="120" required>
+        <p class="hint">こちらのアドレスに入室用パスコードをお送りします。お間違えのないようご確認ください。</p>
+      </div>
+      <div class="field">
+        <label for="tel">お電話番号</label>
+        <input type="tel" id="tel" name="tel" autocomplete="tel" maxlength="20" inputmode="tel">
+      </div>
+      <div class="field">
+        <label for="party_size">ご来場人数 <span class="req">必須</span></label>
+        <select id="party_size" name="party_size" required></select>
+      </div>
+
+      <div id="surveyFields"></div>
+
+      <!-- 自動投稿よけ。目には見えません。 -->
+      <div class="hp"><label>ホームページ<input type="text" name="website" id="website" tabindex="-1" autocomplete="off"></label></div>
+
+      <div class="field check">
+        <label><input type="checkbox" id="agree" name="agree">
+          ご入力いただいた情報は、ご見学のご案内および当社からのご連絡にのみ使用いたします。上記に同意します。<span class="req">必須</span>
+        </label>
+      </div>
+
+      <div class="actions">
+        <button type="button" class="btn ghost" id="backTo1">← 日時を選び直す</button>
+        <button type="submit" class="btn primary">入力内容を確認する</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- ステップ3: 確認 -->
+  <section class="card hidden" id="step3">
+    <h2>ご入力内容のご確認</h2>
+    <dl class="summary" id="confirmList"></dl>
+    <p class="notice warn" id="submitError" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn ghost" id="backTo2">← 修正する</button>
+      <button type="button" class="btn primary" id="submitBtn">この内容で予約する</button>
+    </div>
+  </section>
+
+  <!-- ステップ4: 完了 -->
+  <section class="card hidden" id="step4">
+    <h2>ご予約を承りました</h2>
+    <dl class="summary" id="doneList"></dl>
+    <p class="notice ok" id="doneNote"></p>
+    <p class="hint">メールが届かない場合は、迷惑メールフォルダをご確認のうえ、お電話にてご連絡ください。</p>
+  </section>
+
+  <footer class="foot" id="foot"></footer>
+</main>
+
+<script src="assets/app.js"></script>
+</body>
+</html>
