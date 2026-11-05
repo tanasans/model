@@ -1,0 +1,52 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7f9;
+  --card: #ffffff;
+  --text: #1d2330;
+  --muted: #5d6677;
+  --accent: #1f6feb;
+  --danger: #c62828;
+  --ok: #2e7d32;
+  --wait: #ef8f00;
+  --border: #dde1e8;
+  font-family: system-ui, 'Segoe UI', 'Yu Gothic UI', 'Meiryo', sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c;
+    --card: #1d2128;
+    --text: #e6e9ef;
+    --muted: #9aa3b2;
+    --border: #2e3440;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); }
+.app { max-width: 720px; margin: 0 auto; padding: 24px 16px 48px; }
+header h1 { margin: 0; font-size: 1.6rem; }
+.sub { margin: 4px 0 20px; color: var(--muted); }
+.status { display: flex; gap: 12px; align-items: flex-start; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+.dot { width: 14px; height: 14px; border-radius: 50%; margin-top: 4px; flex: none; }
+.dot-on { background: var(--ok); }
+.dot-wait { background: var(--wait); }
+.dot-off { background: var(--muted); }
+.phase { font-weight: 600; }
+.meta { color: var(--muted); font-size: 0.9rem; margin-top: 2px; }
+.buttons { display: flex; gap: 12px; margin: 18px 0; }
+.buttons button { flex: 1; font-size: 1.1rem; padding: 14px; border-radius: 10px; border: none; cursor: pointer; color: #fff; font-weight: 600; }
+.buttons button:disabled { opacity: 0.4; cursor: not-allowed; }
+.start { background: var(--accent); }
+.stop { background: var(--danger); }
+.alert { border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; }
+.alert.error { background: color-mix(in srgb, var(--danger) 15%, transparent); border: 1px solid var(--danger); }
+.alert.info { background: color-mix(in srgb, var(--accent) 12%, transparent); border: 1px solid var(--accent); }
+.transcript { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+.transcript h2 { margin: 0 0 4px; font-size: 1.1rem; }
+.hint, .empty { color: var(--muted); font-size: 0.9rem; }
+.transcript ul { list-style: none; padding: 0; margin: 8px 0 0; display: flex; flex-direction: column; gap: 10px; }
+.transcript li { display: flex; gap: 10px; }
+.who { flex: none; width: 3.5em; font-weight: 600; color: var(--muted); }
+.assistant .who { color: var(--accent); }
+.text { white-space: pre-wrap; word-break: break-word; }
+.text.missing { color: var(--muted); font-style: italic; }
+footer { margin-top: 20px; color: var(--muted); font-size: 0.85rem; }
