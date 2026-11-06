@@ -108,3 +108,14 @@ button.ghost:disabled { opacity: 0.4; cursor: not-allowed; }
 .wizard-steps span.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 .wizard .notes { font-size: 0.9rem; padding-left: 1.2em; }
 .meter-bar.small { flex: 1; min-width: 120px; height: 8px; }
+
+/* ---- v4: レベル表示・マイク情報・手動設定 ---- */
+.meter-bar { position: relative; }
+.meter-floor { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ok); }
+.levels { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 0.85rem; color: var(--muted); margin-top: 4px; }
+.levels strong { color: var(--text); font-variant-numeric: tabular-nums; }
+.levels small { margin-left: 2px; }
+.proc { flex-direction: column; align-items: flex-start; }
+.proc-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.manual { border: 1px dashed var(--border); border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
+.manual small { font-size: 0.75rem; }

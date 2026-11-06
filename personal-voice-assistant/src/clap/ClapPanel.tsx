@@ -3,8 +3,8 @@ import { DEFAULT_PROFILE, type ClapProfile, type TransientInfo } from './clapDet
 import { sanitizeProfile } from './calibration';
 import { playChime } from './chime';
 import type { MicProcessing } from './micCapture';
-import { AMBIENT_SEC, CLAPS_MAX_SEC, CLAPS_TARGET, NOISE_SEC, useCalibration } from './useCalibration';
-import { useClapStandby, type LogEntry, type StandbyStatus } from './useClapStandby';
+import { CALIB_TIMING, useCalibration } from './useCalibration';
+import { useClapStandby, type LogEntry, type Meter, type StandbyStatus } from './useClapStandby';
 
 const STANDBY_LABEL: Record<StandbyStatus, string> = {
   off: 'OFF',
@@ -16,7 +16,16 @@ const STANDBY_LABEL: Record<StandbyStatus, string> = {
 };
 
 const SETTINGS_KEY = 'pva.clapSettings.v1';
-const PROFILE_KEY = 'pva.clapProfile.v1';
+const PROFILE_KEY_V1 = 'pva.clapProfile.v1';
+const PROFILE_KEY = 'pva.clapProfile.v2';
+
+type ProfileKind = 'standard' | 'calibrated' | 'ambient' | 'manual';
+const KIND_LABEL: Record<ProfileKind, string> = {
+  standard: '標準',
+  calibrated: 'キャリブレーション済み（このPC・この部屋用）',
+  ambient: '環境音の測定結果から作成（拍手は未測定）',
+  manual: '手動設定',
+};
 
 interface ClapSettings {
   sensitivity: number;
@@ -24,25 +33,35 @@ interface ClapSettings {
 }
 const DEFAULT_SETTINGS: ClapSettings = { sensitivity: 5, maxIntervalMs: 600 };
 
+interface ProfileState {
+  kind: ProfileKind;
+  profile: ClapProfile;
+}
+
 function loadSettings(): ClapSettings {
   try {
     const raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? 'null') as Partial<ClapSettings> | null;
     return {
-      sensitivity: clamp(Number(raw?.sensitivity ?? DEFAULT_SETTINGS.sensitivity), 1, 10),
-      maxIntervalMs: clamp(Number(raw?.maxIntervalMs ?? DEFAULT_SETTINGS.maxIntervalMs), 300, 1000),
+      sensitivity: clampInt(Number(raw?.sensitivity ?? DEFAULT_SETTINGS.sensitivity), 1, 10),
+      maxIntervalMs: clampInt(Number(raw?.maxIntervalMs ?? DEFAULT_SETTINGS.maxIntervalMs), 300, 1000),
     };
   } catch {
     return DEFAULT_SETTINGS;
   }
 }
 
-function loadProfile(): { profile: ClapProfile; calibrated: boolean } {
+function loadProfile(): ProfileState {
   try {
-    const p = sanitizeProfile(JSON.parse(localStorage.getItem(PROFILE_KEY) ?? 'null'));
-    return p ? { profile: p, calibrated: true } : { profile: DEFAULT_PROFILE, calibrated: false };
+    const v2 = JSON.parse(localStorage.getItem(PROFILE_KEY) ?? 'null') as { kind?: unknown; profile?: unknown } | null;
+    const p2 = sanitizeProfile(v2?.profile);
+    if (p2 && typeof v2?.kind === 'string' && v2.kind in KIND_LABEL) return { kind: v2.kind as ProfileKind, profile: p2 };
+    // v3 で保存したキャリブレーション結果を引き継ぐ
+    const p1 = sanitizeProfile(JSON.parse(localStorage.getItem(PROFILE_KEY_V1) ?? 'null'));
+    if (p1) return { kind: 'calibrated', profile: p1 };
   } catch {
-    return { profile: DEFAULT_PROFILE, calibrated: false };
+    /* 壊れた保存データは無視 */
   }
+  return { kind: 'standard', profile: DEFAULT_PROFILE };
 }
 
 function save(key: string, value: unknown): void {
@@ -55,9 +74,7 @@ function save(key: string, value: unknown): void {
 }
 
 export interface ClapPanelProps {
-  /** 会話中・開始処理中は拍手検出を止める */
   conversationBusy: boolean;
-  /** 拍手 2 回を検知したら呼ばれる（起動音の後） */
   onClapStart: () => Promise<void>;
   noSpeechTimeoutSec: number;
 }
@@ -66,14 +83,24 @@ export function ClapPanel({ conversationBusy, onClapStart, noSpeechTimeoutSec }:
   // 拍手待機は毎回 OFF から（マイクを勝手に使わないため）。感度・間隔・基準は保存する
   const [standbyOn, setStandbyOn] = useState(false);
   const [settings, setSettings] = useState<ClapSettings>(loadSettings);
-  const [{ profile, calibrated }, setProfileState] = useState(loadProfile);
+  const [profileState, setProfileState] = useState<ProfileState>(loadProfile);
+  const [manualOpen, setManualOpen] = useState(false);
   const [triggering, setTriggering] = useState(false);
   const [testMode, setTestMode] = useState(false);
   const [testCount, setTestCount] = useState(0);
   const calib = useCalibration();
   const calibrating = calib.step !== 'idle';
+  const { profile, kind } = profileState;
 
   useEffect(() => save(SETTINGS_KEY, settings), [settings]);
+
+  const applyProfile = useCallback((next: ProfileState) => {
+    setProfileState(next);
+    if (next.kind === 'standard') {
+      save(PROFILE_KEY, null);
+      save(PROFILE_KEY_V1, null);
+    } else save(PROFILE_KEY, next);
+  }, []);
 
   const onDoubleClap = useCallback(() => {
     if (triggering) return;
@@ -103,18 +130,17 @@ export function ClapPanel({ conversationBusy, onClapStart, noSpeechTimeoutSec }:
     onDoubleClap,
   });
 
-  const applyCalibration = () => {
-    if (!calib.result?.ok) return;
-    setProfileState({ profile: calib.result.profile, calibrated: true });
-    save(PROFILE_KEY, calib.result.profile);
+  const result = calib.snap?.result ?? null;
+  const useResult = (which: 'calibrated' | 'ambient' | 'manual') => {
+    if (!result) return;
+    const p = which === 'calibrated' ? result.profile : result.fallbackProfile;
+    applyProfile({ kind: which, profile: p });
     setSettings((s) => ({ ...s, sensitivity: 5 }));
-    calib.reset();
-  };
-  const resetCalibration = () => {
-    setProfileState({ profile: DEFAULT_PROFILE, calibrated: false });
-    save(PROFILE_KEY, null);
+    if (which === 'manual') setManualOpen(true);
+    calib.cancel();
   };
 
+  const micInfo = calibrating ? calib.mic : standby.processing;
   const lastSound = standby.log.find((l): l is Extract<LogEntry, { kind: 'sound' }> => l.kind === 'sound');
 
   return (
@@ -135,7 +161,8 @@ export function ClapPanel({ conversationBusy, onClapStart, noSpeechTimeoutSec }:
       </p>
       {standby.error && <div className="alert error">拍手待機エラー：{standby.error}</div>}
 
-      {standbyOn && standby.processing && <ProcessingInfo p={standby.processing} />}
+      {standbyOn && standby.meter && <LiveLevels meter={standby.meter} />}
+      {(standbyOn || calibrating) && micInfo && <MicInfo p={micInfo} />}
 
       <div className="settings">
         <label>
@@ -163,12 +190,15 @@ export function ClapPanel({ conversationBusy, onClapStart, noSpeechTimeoutSec }:
       </div>
 
       <div className="row-actions">
-        <span className="meta">判定基準：{calibrated ? 'キャリブレーション済み（このPC・この部屋用）' : '標準'}</span>
+        <span className="meta">判定基準：{KIND_LABEL[kind]}</span>
         <button className="ghost" onClick={() => void calib.start()} disabled={calibrating || conversationBusy}>
           キャリブレーション
         </button>
-        {calibrated && (
-          <button className="ghost" onClick={resetCalibration} disabled={calibrating}>
+        <button className="ghost" onClick={() => setManualOpen((v) => !v)} disabled={calibrating}>
+          手動設定{manualOpen ? 'を閉じる' : ''}
+        </button>
+        {kind !== 'standard' && (
+          <button className="ghost" onClick={() => applyProfile({ kind: 'standard', profile: DEFAULT_PROFILE })} disabled={calibrating}>
             標準に戻す
           </button>
         )}
@@ -178,7 +208,14 @@ export function ClapPanel({ conversationBusy, onClapStart, noSpeechTimeoutSec }:
         </label>
       </div>
 
-      {calibrating && <CalibrationWizard calib={calib} onApply={applyCalibration} />}
+      {calibrating && <CalibrationWizard calib={calib} onUse={useResult} />}
+
+      {manualOpen && !calibrating && (
+        <ManualSettings
+          profile={profile}
+          onChange={(p) => applyProfile({ kind: 'manual', profile: p })}
+        />
+      )}
 
       {testMode && (
         <div className="testmode">
@@ -188,20 +225,7 @@ export function ClapPanel({ conversationBusy, onClapStart, noSpeechTimeoutSec }:
           <button className="ghost" onClick={() => setTestCount(0)}>
             0 に戻す
           </button>
-          <span className="meta">20回叩いて18回以上検知できれば合格の目安です。</span>
-        </div>
-      )}
-
-      {standby.meter && (
-        <div className="meter" aria-label="マイク入力レベル">
-          <div className="meter-bar">
-            <div className="meter-fill" style={{ width: `${dbToPct(standby.meter.levelDb)}%` }} />
-            <div className="meter-th" style={{ left: `${dbToPct(standby.meter.triggerDb)}%` }} title="反応ライン" />
-          </div>
-          <div className="meta">
-            入力 {fmtDb(standby.meter.levelDb)} ／ 周囲の騒音 {fmtDb(standby.meter.floorDb)} ／ 反応ライン{' '}
-            {fmtDb(standby.meter.triggerDb)}（赤線）
-          </div>
+          <span className="meta">20回叩いて18回以上検知できれば合格の目安です（料金はかかりません）。</span>
         </div>
       )}
 
@@ -228,7 +252,39 @@ export function ClapPanel({ conversationBusy, onClapStart, noSpeechTimeoutSec }:
   );
 }
 
-function ProcessingInfo({ p }: { p: MicProcessing }) {
+/** 現在の入力・環境音の基準値・拍手判定しきい値 */
+function LiveLevels({ meter }: { meter: Meter }) {
+  return (
+    <div className="meter" aria-label="マイク入力レベル">
+      <LevelBar levelDb={meter.levelDb} floorDb={meter.floorDb} gateDb={meter.triggerDb} />
+      <div className="levels">
+        <span>
+          現在の入力 <strong>{fmtDb(meter.levelDb)}</strong>
+        </span>
+        <span>
+          環境音の基準値 <strong>{fmtDb(meter.floorDb)}</strong>
+          <small>（自動推定）</small>
+        </span>
+        <span>
+          拍手判定しきい値 <strong>{fmtDb(meter.triggerDb)}</strong>
+          <small>（赤線）</small>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function LevelBar({ levelDb, floorDb, gateDb }: { levelDb: number; floorDb?: number | null; gateDb?: number | null }) {
+  return (
+    <div className="meter-bar">
+      <div className="meter-fill" style={{ width: `${dbToPct(levelDb)}%` }} />
+      {floorDb != null && <div className="meter-floor" style={{ left: `${dbToPct(floorDb)}%` }} title="環境音の基準値" />}
+      {gateDb != null && <div className="meter-th" style={{ left: `${dbToPct(gateDb)}%` }} title="拍手判定しきい値" />}
+    </div>
+  );
+}
+
+function MicInfo({ p }: { p: MicProcessing }) {
   const items: Array<[string, boolean | null]> = [
     ['自動音量調整', p.autoGainControl],
     ['ノイズ抑制', p.noiseSuppression],
@@ -238,18 +294,26 @@ function ProcessingInfo({ p }: { p: MicProcessing }) {
   const anyOn = items.some(([, v]) => v === true);
   return (
     <div className={`proc ${anyOn ? 'proc-warn' : ''}`}>
-      <span className="meta">拍手検出用マイクの音声加工：</span>
-      {items.map(([name, v]) => (
-        <span key={name} className={`chip ${v === true ? 'chip-ng' : v === false ? 'chip-ok' : ''}`}>
-          {name} {v === true ? 'ON' : v === false ? 'OFF' : '不明'}
-        </span>
-      ))}
+      <div className="meta">
+        使用中のマイク：<strong>{p.label || '（名前を取得できません）'}</strong>（{Math.round(p.sampleRate / 100) / 10}kHz）
+      </div>
+      <div className="proc-row">
+        <span className="meta">音声加工（要求はすべて OFF）→ 実際：</span>
+        {items.map(([name, v]) => (
+          <span key={name} className={`chip ${v === true ? 'chip-ng' : v === false ? 'chip-ok' : ''}`}>
+            {name} {v === true ? 'ON' : v === false ? 'OFF' : '不明'}
+          </span>
+        ))}
+      </div>
       {anyOn && (
         <div className="meta">
           ブラウザが音声加工を止められませんでした。拍手の音が削られる可能性があります。Windows の「設定 → システム → サウンド →
           マイクのプロパティ」で「オーディオの強化」や「音声フォーカス」等をオフにしてください。
         </div>
       )}
+      <div className="meta">
+        別のマイクを使うには、アドレスバー左のアイコン →「サイトの設定」→ マイク で選び、ページを再読み込みしてください。
+      </div>
     </div>
   );
 }
@@ -263,7 +327,7 @@ function SoundCard({ info }: { info: TransientInfo }) {
       {!info.accepted && info.reason && <div className="sound-reason">理由：{info.reason}</div>}
       <ul className="checks">
         {info.checks.map((c) => (
-          <li key={c.key} className={c.pass ? 'pass' : 'fail'} title={c.kind === 'min' ? '基準以上で合格' : '基準以下で合格'}>
+          <li key={c.key} className={c.pass ? 'pass' : 'fail'}>
             <span className="mark" aria-hidden>
               {c.pass ? '✓' : '✗'}
             </span>
@@ -280,43 +344,105 @@ function SoundCard({ info }: { info: TransientInfo }) {
   );
 }
 
+const MANUAL_FIELDS: Array<{
+  key: keyof ClapProfile;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  unit: string;
+  help: string;
+}> = [
+  { key: 'minLevelDb', label: '拍手判定しきい値（大きさ）', min: -60, max: -6, step: 1, unit: 'dB', help: '拍手が反応しないなら下げる。小さな物音で反応するなら上げる' },
+  { key: 'minAboveFloorDb', label: '環境音からの差', min: 6, max: 30, step: 1, unit: 'dB', help: '環境音の基準値よりこれだけ大きい音だけを候補にする' },
+  { key: 'minJumpDb', label: '急な変化', min: 4, max: 20, step: 1, unit: 'dB', help: '直前からの音量の増え方' },
+  { key: 'minDecayDb', label: '短さ', min: 0, max: 15, step: 0.5, unit: 'dB', help: '響く部屋で反応しないなら下げる' },
+  { key: 'minCentroidHz', label: '音の高さ', min: 200, max: 3000, step: 50, unit: 'Hz', help: '低い物音に反応するなら上げる' },
+  { key: 'maxCrest', label: '尖り（上限）', min: 3, max: 15, step: 0.5, unit: '', help: 'キーボード音に反応するなら下げる' },
+];
+
+function ManualSettings({ profile, onChange }: { profile: ClapProfile; onChange: (p: ClapProfile) => void }) {
+  return (
+    <div className="manual">
+      <div className="meta">
+        値を変えるとすぐに反映されます（感度 5 のときの基準。感度スライダーはこの値を全体的に緩める／厳しくします）。
+        テストモードと「直近の大きな音」の ✓／✗ を見ながら調整してください。
+      </div>
+      <div className="settings">
+        {MANUAL_FIELDS.map((f) => (
+          <label key={f.key} title={f.help}>
+            {f.label}：{fmtNum(profile[f.key])}
+            {f.unit}
+            <input
+              type="range"
+              min={f.min}
+              max={f.max}
+              step={f.step}
+              value={profile[f.key]}
+              onChange={(e) => onChange({ ...profile, [f.key]: Number(e.target.value) })}
+            />
+            <small className="meta">{f.help}</small>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function CalibrationWizard({
   calib,
-  onApply,
+  onUse,
 }: {
   calib: ReturnType<typeof useCalibration>;
-  onApply: () => void;
+  onUse: (which: 'calibrated' | 'ambient' | 'manual') => void;
 }) {
-  const { step } = calib;
+  const { step, snap } = calib;
+  const amb = snap?.ambient ?? null;
+  const running = step === 'ambient' || step === 'claps' || step === 'noise';
   return (
     <div className="wizard" role="dialog" aria-label="キャリブレーション">
       <div className="wizard-steps">
-        <span className={step === 'ambient' ? 'on' : ''}>1. 静かに</span>
-        <span className={step === 'claps' ? 'on' : ''}>2. 拍手 {CLAPS_TARGET} 回</span>
+        <span className={step === 'ambient' ? 'on' : ''}>1. 環境音</span>
+        <span className={step === 'claps' ? 'on' : ''}>2. 拍手 {CALIB_TIMING.clapsTarget} 回</span>
         <span className={step === 'noise-ready' || step === 'noise' ? 'on' : ''}>3. 声・キーボード（任意）</span>
         <span className={step === 'result' ? 'on' : ''}>4. 結果</span>
       </div>
+      <p className="meta">各手順は時間で自動的に次へ進みます。小さな物音があっても最初からやり直しにはなりません。</p>
+
       {step === 'ambient' && (
         <p>
-          <strong>そのまま静かにしてください</strong>（周囲の騒音を測っています… 残り {calib.secondsLeft} 秒 / {AMBIENT_SEC} 秒）
+          <strong>ふだんの部屋の状態のままお待ちください</strong>（完全な無音でなくて大丈夫です。拍手はまだしないでください）
+          <br />
+          環境音を測っています… 残り {snap?.secondsLeft ?? Math.round(CALIB_TIMING.ambientMs / 1000)} 秒
         </p>
       )}
-      {step === 'claps' && (
+      {step === 'claps' && snap && (
         <p>
           <strong>1秒ほど間をあけて、ふだん起動するときと同じ位置・強さで1回ずつ拍手</strong>してください。
           <br />
-          検出 {calib.clapCount} / {CLAPS_TARGET} 回（残り {calib.secondsLeft} 秒 / 最大 {CLAPS_MAX_SEC} 秒）
+          拍手 <strong>{snap.clapCount}</strong> / {CALIB_TIMING.clapsTarget} 回（残り {snap.secondsLeft} 秒で自動的に次へ）
+          {snap.ignoredCount > 0 && (
+            <>
+              <br />
+              <small className="meta">
+                しきい値に届かない小さな音を {snap.ignoredCount} 回無視しました
+                {snap.lastIgnoredDb !== null && `（直近 ${fmtDb(snap.lastIgnoredDb)}）`}。拍手が数えられない場合は、もう少し強く叩いてください。
+              </small>
+            </>
+          )}
         </p>
       )}
-      {step === 'noise-ready' && (
+      {step === 'noise-ready' && snap && (
         <div>
           <p>
-            拍手の測定が終わりました（大きな音を {calib.clapCount} 回検出）。続けて、<strong>誤起動させたくない音</strong>（ふだんの声で話す・キーボードを打つ）を{' '}
-            {NOISE_SEC} 秒測ると、それと区別できる基準にします。
+            拍手を {snap.clapCount} 回数えました。続けて、<strong>誤起動させたくない音</strong>（ふだんの声で話す・キーボードを打つ）を{' '}
+            {Math.round(CALIB_TIMING.noiseMs / 1000)} 秒測ると、それと区別できる基準にします。
+            <br />
+            <small className="meta">{snap.secondsLeft} 秒操作がなければ、自動で結果へ進みます。</small>
           </p>
           <div className="row-actions">
             <button className="ghost" onClick={calib.startNoise}>
-              測る（{NOISE_SEC}秒）
+              測る（{Math.round(CALIB_TIMING.noiseMs / 1000)}秒）
             </button>
             <button className="ghost" onClick={calib.skipNoise}>
               スキップして結果へ
@@ -324,24 +450,54 @@ function CalibrationWizard({
           </div>
         </div>
       )}
-      {step === 'noise' && (
+      {step === 'noise' && snap && (
         <p>
-          <strong>ふだんの声で話す、またはキーボードを打ってください</strong>（拍手はしないでください）… 残り {calib.secondsLeft} 秒
+          <strong>ふだんの声で話す、またはキーボードを打ってください</strong>（拍手はしないでください）… 残り {snap.secondsLeft} 秒
         </p>
       )}
-      {step === 'result' && calib.result && (
+
+      {running && snap && (
+        <div className="meter">
+          <LevelBar levelDb={snap.levelDb} floorDb={amb?.floorDb ?? snap.liveFloorDb} gateDb={amb?.clapGateDb ?? null} />
+          <div className="levels">
+            <span>
+              現在の入力 <strong>{fmtDb(snap.levelDb)}</strong>
+            </span>
+            <span>
+              環境音の基準値 <strong>{fmtDb(amb?.floorDb ?? snap.liveFloorDb)}</strong>
+              <small>{amb ? '（測定済み）' : '（測定中）'}</small>
+            </span>
+            <span>
+              拍手判定しきい値 <strong>{amb ? fmtDb(amb.clapGateDb) : '測定後に決定'}</strong>
+            </span>
+          </div>
+        </div>
+      )}
+
+      {step === 'result' && snap?.result && (
         <div>
           <p>
-            <strong>{calib.result.ok ? 'キャリブレーション完了' : 'キャリブレーションできませんでした'}</strong>
+            <strong>{snap.result.ok ? 'キャリブレーション完了' : '拍手の測定ができませんでした'}</strong>
           </p>
           <ul className="notes">
-            <li>周囲の騒音：{fmtDb(calib.result.summary.ambientDb)}</li>
-            {calib.result.notes.map((n) => (
+            <li>
+              環境音の基準値：{fmtDb(snap.result.summary.floorDb)}
+              {snap.result.summary.smallSoundDb !== null && ` ／ 環境の小さな音：${fmtDb(snap.result.summary.smallSoundDb)}`}
+              {' ／ '}拍手判定しきい値：{fmtDb(snap.result.ok ? snap.result.profile.minLevelDb : snap.result.fallbackProfile.minLevelDb)}
+            </li>
+            {snap.result.notes.map((n) => (
               <li key={n}>{n}</li>
             ))}
           </ul>
           <div className="row-actions">
-            {calib.result.ok && <button onClick={onApply}>この基準を使う</button>}
+            {snap.result.ok ? (
+              <button onClick={() => onUse('calibrated')}>この基準を使う</button>
+            ) : (
+              <button onClick={() => onUse('ambient')}>環境音の結果だけで試す</button>
+            )}
+            <button className="ghost" onClick={() => onUse('manual')}>
+              手動設定で試す
+            </button>
             <button className="ghost" onClick={() => void calib.start()}>
               やり直す
             </button>
@@ -359,11 +515,8 @@ function CalibrationWizard({
           </button>
         </div>
       )}
-      {(step === 'ambient' || step === 'claps' || step === 'noise') && (
+      {running && (
         <div className="row-actions">
-          <div className="meter-bar small">
-            <div className="meter-fill" style={{ width: `${dbToPct(calib.levelDb)}%` }} />
-          </div>
           <button className="ghost" onClick={calib.cancel}>
             中止
           </button>
@@ -373,11 +526,11 @@ function CalibrationWizard({
   );
 }
 
-function clamp(n: number, min: number, max: number): number {
+function clampInt(n: number, min: number, max: number): number {
   return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : min;
 }
 function dbToPct(db: number): number {
-  return Math.min(100, Math.max(0, ((db + 70) / 70) * 100));
+  return Math.min(100, Math.max(0, ((db + 80) / 80) * 100));
 }
 function fmtDb(db: number): string {
   return `${Math.max(-99, Math.round(db))}dB`;

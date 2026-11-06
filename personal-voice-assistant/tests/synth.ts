@@ -172,6 +172,13 @@ export class Track {
     }
     return this;
   }
+  click(atMs: number, peak = 0.05): this {
+    const r = rng(Math.round(atMs) + 1);
+    const n = Math.round(SR * 0.01);
+    const w = new Float32Array(n);
+    for (let i = 0; i < n; i++) w[i] = peak * r() * 2 * Math.exp(-i / (SR * 0.0015));
+    return this.addWave(atMs, w);
+  }
   /** 机に物を置く音：低い「ドン」 */
   thud(atMs: number, peak = 0.6): this {
     const n = Math.round(0.15 * SR);

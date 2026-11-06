@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ClapDetector, type ClapProfile, type DetectorEvent, type TransientInfo } from '../src/clap/clapDetector.ts';
-import { computeCalibration } from '../src/clap/calibration.ts';
+import { CALIB_TIMING, CalibrationRun, analyzeAmbient } from '../src/clap/calibration.ts';
 import { SR, Track, dbToAmp, rng } from './synth.ts';
 
 interface RunOpts {
@@ -173,46 +173,104 @@ test('不採用の音には、失敗した項目と分かりやすい理由が�
 });
 
 // ---------- キャリブレーション ----------
-function calibrationRecording(clapPeak: number, rt60: number) {
-  const ambient = new Track(3, -50, 3);
-  const ambientEv = run(ambient, { featuresOnly: true });
-  void ambientEv;
-  const levels: number[] = [];
-  const fs = Math.round(SR * 0.0025);
-  for (let i = 0; i + fs <= ambient.data.length; i += fs) {
-    let e = 0;
-    for (let k = 0; k < fs; k++) e += ambient.data[i + k]! ** 2;
-    levels.push(10 * Math.log10(e / fs + 1e-12));
-  }
-  const clapsTr = new Track(8, -50, 4);
-  for (let k = 0; k < 5; k++) clapsTr.clap(1200 + k * 1200, { peak: clapPeak * (0.8 + 0.1 * k), rt60, reverbDb: -14 });
-  const noiseTr = new Track(9, -50, 5).speech(800, 4, 0.3).typing(5000, 3.5, 0.2);
-  return {
-    ambientLevels: levels,
-    claps: transients(run(clapsTr, { featuresOnly: true, sensitivity: 10, profile: PERMISSIVE })),
-    noises: transients(run(noiseTr, { featuresOnly: true, sensitivity: 10, profile: PERMISSIVE })),
-  };
-}
-import { PERMISSIVE_PROFILE as PERMISSIVE } from '../src/clap/calibration.ts';
+const T = CALIB_TIMING;
 
-test('キャリブレーション: 小さめの拍手・響く部屋でも、作った基準で起動し、話し声とキーボードでは起動しない', () => {
-  const rec = calibrationRecording(0.06, 0.8);
-  const res = computeCalibration(rec);
-  assert.ok(res.ok, res.notes.join('\n'));
-  assert.ok(res.summary.clapCount >= 4, `claps ${res.summary.clapCount}`);
-  let ok = 0;
-  for (let s = 0; s < 10; s++) {
-    const p = { peak: 0.06 * (0.85 + 0.03 * s), rt60: 0.8, reverbDb: -14 };
-    const tr = new Track(4, -50, 40 + s).clap(1500, { ...p, seed: s }).clap(1900 + s * 20, { ...p, seed: s + 50 });
-    if (doubles(run(tr, { profile: res.profile })) === 1) ok++;
+/** 手順に合わせた録音を CalibrationRun に流す。noiseAtMs を指定すると「測る」を押す */
+function runCalibration(track: Track, opts: { pressNoise?: boolean } = {}) {
+  const r = new CalibrationRun(SR);
+  const steps: string[] = [];
+  for (let i = 0; i < track.data.length; i += 2048) {
+    r.feed(track.data.subarray(i, i + 2048));
+    const snap = r.snapshot();
+    if (steps[steps.length - 1] !== snap.step) steps.push(snap.step);
+    if (snap.step === 'noise-ready' && opts.pressNoise) r.startNoise();
+    if (snap.step === 'result') break;
   }
-  assert.ok(ok >= 9, `キャリブレーション後の成功 ${ok}/10 profile=${JSON.stringify(res.profile)}`);
-  const noise = new Track(62, -50, 77).speech(1000, 30, 0.3, 3).typing(32000, 28, 0.2, 4);
-  assert.equal(doubles(run(noise, { profile: res.profile })), 0);
+  return { run: r, snap: r.snapshot(), steps };
+}
+
+/** 普通の部屋：ファン音＋ランダムな小さなコツコツ音（実機で計測が進まなかった状況の再現） */
+function noisyRoom(seconds: number, seed = 3, fanDb = -42) {
+  const tr = new Track(seconds, fanDb, seed);
+  const r = rng(seed + 2);
+  let at = 300;
+  while (at < seconds * 1000 - 300) {
+    tr.click(at, 0.02 + (r() + 0.5) * 0.06);
+    at += 300 + (r() + 0.5) * 900;
+  }
+  return tr;
+}
+
+test('キャリブレーション: 環境音（ファン＋小さな音）があっても、無音を待たずに時間で次の手順へ進む', () => {
+  // 拍手をしない 40 秒間の録音：手順は止まらず最後（結果）まで自動で進むこと
+  const { snap, steps } = runCalibration(noisyRoom(40));
+  assert.deepEqual(steps, ['ambient', 'claps', 'noise-ready', 'result']);
+  // 小さな音は拍手として数えない
+  assert.equal(snap.result?.summary.clapCount, 0);
+  assert.equal(snap.result?.ok, false);
+  // 失敗しても、環境音から作った基準と分かりやすい案内がある
+  assert.ok(snap.result!.fallbackProfile.minLevelDb > -45, JSON.stringify(snap.result!.fallbackProfile));
+  assert.ok(snap.result!.notes.some((n) => /手動設定/.test(n)));
+  // 環境音の基準値はファン音のレベル付近（小さな音に引っ張られない）
+  assert.ok(Math.abs(snap.result!.summary.floorDb - -42) < 4, `floor ${snap.result!.summary.floorDb}`);
 });
 
-test('キャリブレーション: 拍手が足りなければ失敗として案内する', () => {
-  const res = computeCalibration({ ambientLevels: [-60, -61], claps: [], noises: [] });
-  assert.equal(res.ok, false);
-  assert.match(res.notes[0]!, /回以上必要/);
+test('キャリブレーション: 騒がしい部屋でも拍手5回を正しく数え、小さな音は無視した回数として表示する', () => {
+  const tr = noisyRoom(30);
+  for (let k = 0; k < 5; k++) tr.clap(T.ambientMs + 1000 + k * 1200, { peak: 0.25 + k * 0.03, rt60: 0.6, reverbDb: -16 });
+  const { snap, steps } = runCalibration(tr);
+  assert.deepEqual(steps.slice(0, 3), ['ambient', 'claps', 'noise-ready']);
+  assert.equal(snap.result?.ok, true, snap.result?.notes.join('\n') ?? '');
+  assert.equal(snap.result?.summary.clapCount, 5);
+  assert.ok(snap.ignoredCount > 0, '小さな音を無視した回数');
+});
+
+test('キャリブレーション: 測定中に小さな音があっても最初からやり直しにならない（手順1は一度だけ）', () => {
+  const { steps } = runCalibration(noisyRoom(25));
+  assert.equal(steps.filter((s) => s === 'ambient').length, 1);
+});
+
+test('キャリブレーション後の基準: 騒がしい部屋で拍手2回は起動し、小さな音・話し声・キーボードでは起動しない', () => {
+  const tr = noisyRoom(40, 11);
+  for (let k = 0; k < 5; k++) tr.clap(T.ambientMs + 1000 + k * 1200, { peak: 0.2 + k * 0.02, rt60: 0.7, reverbDb: -15 });
+  // 手順3：話し声とキーボード
+  const noiseStart = T.ambientMs + 1000 + 5 * 1200 + T.afterLastClapMs;
+  tr.speech(noiseStart + 300, 3, 0.25).typingWords(noiseStart + 3400, 2.5, 0.2);
+  const { snap } = runCalibration(tr, { pressNoise: true });
+  assert.ok(snap.result?.ok, snap.result?.notes.join('\n') ?? '');
+  const profile = snap.result!.profile;
+  let ok = 0;
+  for (let s = 0; s < 10; s++) {
+    const p = { peak: 0.2 * (0.85 + 0.03 * s), rt60: 0.7, reverbDb: -15 };
+    const t = noisyRoom(5, 50 + s).clap(2500, { ...p, seed: s }).clap(2950 + s * 15, { ...p, seed: s + 50 });
+    if (doubles(run(t, { profile })) === 1) ok++;
+  }
+  assert.ok(ok >= 9, `成功 ${ok}/10 profile=${JSON.stringify(profile)}`);
+  assert.equal(doubles(run(noisyRoom(60, 77), { profile })), 0, '小さな音だけ');
+  assert.equal(doubles(run(new Track(62, -42, 78).speech(1000, 30, 0.3, 3).typingWords(32000, 28, 0.2, 4), { profile })), 0);
+});
+
+test('キャリブレーション: 静かな部屋（従来どおり）でも成功する', () => {
+  const tr = new Track(30, -58, 4);
+  for (let k = 0; k < 5; k++) tr.clap(T.ambientMs + 1000 + k * 1200, { peak: 0.06 * (0.8 + 0.1 * k), rt60: 0.8, reverbDb: -14 });
+  const { snap } = runCalibration(tr);
+  assert.ok(snap.result?.ok, snap.result?.notes.join('\n') ?? '');
+  assert.equal(snap.result?.summary.clapCount, 5);
+});
+
+test('環境音の解析: 小さな音の大きさを測り、拍手判定しきい値をその上に置く', () => {
+  const levels = Array.from({ length: 1000 }, (_, i) => -50 + (i % 10) * 0.3);
+  const small = [-34, -33, -35].map((levelDb) => ({ levelDb }) as TransientInfo);
+  const a = analyzeAmbient(levels, small);
+  assert.ok(Math.abs(a.floorDb - -48.7) < 1);
+  assert.ok(a.clapGateDb >= -33 + 4 - 0.1, `gate ${a.clapGateDb}`);
+});
+
+test('検出器: 小さな音が頻繁にあってもノイズフロアの推定が環境音レベルに保たれ、拍手2回は起動する', () => {
+  const tr = noisyRoom(8, 21, -45).clap(5000, { peak: 0.3 }).clap(5450, { peak: 0.28 });
+  const d = new ClapDetector({ sampleRate: SR, sensitivity: 5, maxIntervalMs: 600 });
+  let doublesN = 0;
+  for (let i = 0; i < tr.data.length; i += 2048) for (const e of d.process(tr.data.subarray(i, i + 2048))) if (e.type === 'double-clap') doublesN++;
+  assert.equal(doublesN, 1);
+  assert.ok(Math.abs(d.noiseFloorDb - -45) < 5, `floor ${d.noiseFloorDb}`);
 });

@@ -1,149 +1,87 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ClapDetector, type TransientInfo } from './clapDetector';
-import { PERMISSIVE_PROFILE, computeCalibration, frameLevelsDb, type CalibrationResult } from './calibration';
-import { MicError, openRawMic, type MicCapture } from './micCapture';
+import { CALIB_TIMING, CalibrationRun, type CalibSnapshot } from './calibration';
+import { MicError, openRawMic, type MicCapture, type MicProcessing } from './micCapture';
 
 /**
- * キャリブレーションの進行管理（ブラウザ内のみ。API 呼び出し・送信・保存なし）
- *   ambient（3 秒）→ claps（最大 15 秒、5 回で次へ）→ noise-ready → noise（任意 6 秒）→ result
+ * キャリブレーションの画面側の管理（ブラウザ内のみ。API 呼び出し・送信・保存なし）。
+ * 手順の進行は CalibrationRun が音声サンプルの時間で自動的に行う（無音を待たない・やり直しにならない）。
  */
-export type CalibStep = 'idle' | 'ambient' | 'claps' | 'noise-ready' | 'noise' | 'result' | 'error';
+export type CalibUiStep = 'idle' | 'error' | CalibSnapshot['step'];
 
-export const AMBIENT_SEC = 3;
-export const CLAPS_TARGET = 5;
-export const CLAPS_MAX_SEC = 15;
-export const NOISE_SEC = 6;
+/** この時間マイクから音声が届かなければエラーにする */
+const NO_AUDIO_MS = 2500;
+
+export { CALIB_TIMING };
 
 export function useCalibration() {
-  const [step, setStep] = useState<CalibStep>('idle');
-  const [secondsLeft, setSecondsLeft] = useState(0);
-  const [clapCount, setClapCount] = useState(0);
-  const [result, setResult] = useState<CalibrationResult | null>(null);
+  const [snap, setSnap] = useState<CalibSnapshot | null>(null);
+  const [uiStep, setUiStep] = useState<CalibUiStep>('idle');
   const [error, setError] = useState<string | null>(null);
-  const [levelDb, setLevelDb] = useState(-100);
+  const [mic, setMic] = useState<MicProcessing | null>(null);
 
   const micRef = useRef<MicCapture | null>(null);
-  const timersRef = useRef<number[]>([]);
-  const dataRef = useRef({ ambient: [] as number[], claps: [] as TransientInfo[], noises: [] as TransientInfo[] });
-  const stepRef = useRef<CalibStep>('idle');
-  const detectorRef = useRef<ClapDetector | null>(null);
+  const runRef = useRef<CalibrationRun | null>(null);
+  const timerRef = useRef<number | null>(null);
+  const lastAudioRef = useRef(0);
 
-  const clearTimers = () => {
-    timersRef.current.forEach((t) => window.clearTimeout(t));
-    timersRef.current = [];
-  };
-  const stopMic = () => {
+  const stop = useCallback(() => {
+    if (timerRef.current !== null) window.clearInterval(timerRef.current);
+    timerRef.current = null;
     micRef.current?.close();
     micRef.current = null;
-    detectorRef.current = null;
-  };
-
-  const go = useCallback((s: CalibStep) => {
-    stepRef.current = s;
-    setStep(s);
   }, []);
-
-  const countdown = (sec: number, onDone: () => void) => {
-    clearTimers();
-    setSecondsLeft(sec);
-    for (let i = 1; i <= sec; i++) {
-      timersRef.current.push(window.setTimeout(() => setSecondsLeft(sec - i), i * 1000));
-    }
-    timersRef.current.push(window.setTimeout(onDone, sec * 1000));
-  };
-
-  const finish = useCallback(
-    (withNoise: boolean) => {
-      clearTimers();
-      stopMic();
-      const d = dataRef.current;
-      setResult(computeCalibration({ ambientLevels: d.ambient, claps: d.claps, noises: withNoise ? d.noises : [] }));
-      go('result');
-    },
-    [go],
-  );
-
-  const startNoise = useCallback(() => {
-    if (!micRef.current) return;
-    dataRef.current.noises = [];
-    go('noise');
-    countdown(NOISE_SEC, () => finish(true));
-  }, [finish, go]);
 
   const start = useCallback(async () => {
-    clearTimers();
-    stopMic();
-    dataRef.current = { ambient: [], claps: [], noises: [] };
-    setClapCount(0);
-    setResult(null);
+    stop();
+    runRef.current = null;
+    setSnap(null);
     setError(null);
+    setUiStep('ambient');
     try {
-      const mic = await openRawMic((samples) => {
-        const s = stepRef.current;
-        if (s === 'ambient') {
-          dataRef.current.ambient.push(...frameLevelsDb(samples, mic.sampleRate));
+      const capture = await openRawMic((samples) => {
+        lastAudioRef.current = performance.now();
+        runRef.current?.feed(samples);
+      });
+      micRef.current = capture;
+      setMic(capture.processing);
+      runRef.current = new CalibrationRun(capture.sampleRate);
+      lastAudioRef.current = performance.now();
+      // 画面更新（10 回/秒）と、マイクから音が届かない場合の検出
+      timerRef.current = window.setInterval(() => {
+        const run = runRef.current;
+        if (!run) return;
+        const s = run.snapshot();
+        setSnap(s);
+        setUiStep(s.step);
+        if (s.step === 'result') stop();
+        else if (performance.now() - lastAudioRef.current > NO_AUDIO_MS) {
+          stop();
+          setError('マイクから音声が届いていません。マイクの接続・選択（Chrome のサイト設定）を確認してください。');
+          setUiStep('error');
         }
-        const det = detectorRef.current;
-        if (!det) return;
-        for (const e of det.process(samples)) {
-          if (e.type !== 'transient') continue;
-          if (stepRef.current === 'claps') {
-            dataRef.current.claps.push(e.info);
-            const n = dataRef.current.claps.length;
-            setClapCount(n);
-            if (n === CLAPS_TARGET) {
-              clearTimers();
-              // 最後の拍手の余韻が収まってから次へ
-              timersRef.current.push(window.setTimeout(() => go('noise-ready'), 600));
-            }
-          } else if (stepRef.current === 'noise') {
-            dataRef.current.noises.push(e.info);
-          }
-        }
-        setLevelDb(det.levelDb);
-      });
-      micRef.current = mic;
-      // 特徴を集める検出器（並びの判定はしない）
-      detectorRef.current = new ClapDetector({
-        sampleRate: mic.sampleRate,
-        sensitivity: 5,
-        maxIntervalMs: 600,
-        profile: PERMISSIVE_PROFILE,
-        featuresOnly: true,
-      });
-      go('ambient');
-      countdown(AMBIENT_SEC, () => {
-        go('claps');
-        countdown(CLAPS_MAX_SEC, () => go('noise-ready'));
-      });
+      }, 100);
     } catch (e) {
       setError(e instanceof MicError ? e.message : 'キャリブレーションを開始できませんでした。');
-      go('error');
+      setUiStep('error');
     }
-  }, [go]);
+  }, [stop]);
 
   const cancel = useCallback(() => {
-    clearTimers();
-    stopMic();
-    go('idle');
-  }, [go]);
+    stop();
+    runRef.current = null;
+    setUiStep('idle');
+  }, [stop]);
 
-  useEffect(() => () => {
-    clearTimers();
-    stopMic();
-  }, []);
+  useEffect(() => () => stop(), [stop]);
 
   return {
-    step,
-    secondsLeft,
-    clapCount,
-    result,
+    step: uiStep,
+    snap,
     error,
-    levelDb,
+    mic,
     start,
-    startNoise,
-    skipNoise: () => finish(false),
+    startNoise: () => runRef.current?.startNoise(),
+    skipNoise: () => runRef.current?.skipNoise(),
     cancel,
-    reset: () => go('idle'),
   };
 }

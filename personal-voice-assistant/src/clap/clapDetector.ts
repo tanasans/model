@@ -175,6 +175,9 @@ export class ClapDetector {
   private hist: number[] = [];
   private readonly histLen: number;
   private floorDb = -70;
+  private floorRing: number[] = [];
+  private readonly floorRingMax: number;
+  private floorTick = 0;
   private mode: 'idle' | 'candidate' | 'tail' = 'idle';
   private cand: Candidate | null = null;
   private tailStartIdx = 0;
@@ -192,6 +195,7 @@ export class ClapDetector {
     this.frameMs = (this.frameSize / opts.sampleRate) * 1000;
     this.frameBuf = new Float32Array(this.frameSize);
     this.histLen = Math.ceil(100 / this.frameMs);
+    this.floorRingMax = Math.ceil(3000 / this.frameMs);
   }
 
   get levelDb(): number {
@@ -273,8 +277,14 @@ export class ClapDetector {
     const onset = !warm && loud && jump >= e.minJumpDb;
 
     if (this.mode === 'candidate' && this.cand) {
-      this.cand.frames.push(frame);
-      if (this.candidateComplete(this.cand)) this.finalize(this.cand, events);
+      const candPeak = Math.max(...this.cand.frames.map((f) => f.db));
+      if (onset && db >= candPeak + 10) {
+        // 小さな音を分析中に、はるかに大きな鋭い音（拍手）が来た → 新しい音として分析し直す
+        this.startCandidate(frame, jump);
+      } else {
+        this.cand.frames.push(frame);
+        if (this.candidateComplete(this.cand)) this.finalize(this.cand, events);
+      }
     } else if (this.mode === 'tail') {
       const tailMs = now - this.t(this.tailStartIdx);
       if (onset) {
@@ -302,16 +312,30 @@ export class ClapDetector {
       } else {
         this.loudRunFrames = 0;
         this.activityReported = false;
-        // 騒音レベルの学習（下がるときは速く、上がるときはゆっくり）
-        const a = warm ? 0.2 : db < this.floorDb ? 0.1 : 0.004;
-        this.floorDb = Math.max(-100, this.floorDb + a * (db - this.floorDb));
       }
     }
+
+    this.updateFloor(db, warm);
 
     this.hist.push(db);
     if (this.hist.length > this.histLen) this.hist.shift();
     this.frameIdx++;
     if (!this.opts.featuresOnly) this.advanceSequence(now, events);
+  }
+
+  /**
+   * 周囲の騒音レベル（ノイズフロア）の自動推定。
+   * 直近 3 秒のフレームレベルの下位 20% 点を使う。瞬間的な小さな音（コツッ、カチッ）は
+   * 全体の一部にすぎないため影響を受けず、エアコン・ファンなどの続く環境音には追従する。
+   */
+  private updateFloor(db: number, warm: boolean): void {
+    this.floorRing.push(db);
+    if (this.floorRing.length > this.floorRingMax) this.floorRing.shift();
+    this.floorTick++;
+    if (this.floorTick >= (warm ? 4 : 20)) {
+      this.floorTick = 0;
+      this.floorDb = Math.max(-100, percentileOf(this.floorRing, 0.2));
+    }
   }
 
   private startCandidate(frame: Frame, jump: number): void {
@@ -500,6 +524,11 @@ export class ClapDetector {
       events.push({ type: 'double-clap', timeMs: t, intervalMs: Math.round(seq.t2 - seq.t1) });
     }
   }
+}
+
+function percentileOf(values: number[], p: number): number {
+  const s = values.slice().sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.max(0, Math.floor(p * (s.length - 1))))] ?? -100;
 }
 
 function round1(n: number): number {
