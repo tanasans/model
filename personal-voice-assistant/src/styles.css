@@ -50,3 +50,26 @@ header h1 { margin: 0; font-size: 1.6rem; }
 .text { white-space: pre-wrap; word-break: break-word; }
 .text.missing { color: var(--muted); font-style: italic; }
 footer { margin-top: 20px; color: var(--muted); font-size: 0.85rem; }
+
+/* ---- 拍手待機 ---- */
+.standby { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin-bottom: 18px; }
+.standby-head { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; }
+.switch { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; font-weight: 600; position: relative; }
+.switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.switch .slider { width: 46px; height: 26px; border-radius: 13px; background: var(--muted); position: relative; transition: background 0.15s; flex: none; }
+.switch .slider::after { content: ''; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: transform 0.15s; }
+.switch input:checked + .slider { background: var(--ok); }
+.switch input:checked + .slider::after { transform: translateX(20px); }
+.switch input:focus-visible + .slider { outline: 2px solid var(--accent); outline-offset: 2px; }
+.standby-status { font-size: 0.9rem; color: var(--muted); }
+.st-listening { color: var(--ok); }
+.st-first-clap { color: var(--wait); font-weight: 600; }
+.st-error { color: var(--danger); }
+.settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 20px; margin: 10px 0; font-size: 0.9rem; }
+.settings label { display: flex; flex-direction: column; gap: 6px; }
+.settings input[type='range'] { width: 100%; }
+.meter-bar { position: relative; height: 10px; border-radius: 5px; background: var(--border); overflow: hidden; }
+.meter-fill { position: absolute; inset: 0 auto 0 0; background: var(--accent); transition: width 0.08s linear; }
+.meter-th { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--danger); }
+.diag { margin-top: 8px; font-size: 0.85rem; color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
+.meter .meta { margin-top: 4px; }

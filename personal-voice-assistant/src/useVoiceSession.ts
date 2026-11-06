@@ -35,7 +35,17 @@ interface Active {
   leaseId: string;
   maxTimer: number;
   tickTimer: number;
+  /** 拍手起動時：発話が無いまま一定時間経ったら切断するタイマー */
+  noSpeechTimer: number | null;
 }
+
+export interface StartOptions {
+  /** 'clap' の場合、発話が無ければ自動で切断する（誤起動時の課金を抑える） */
+  trigger?: 'manual' | 'clap';
+}
+
+/** 拍手で起動したのに話しかけられなかった場合、この秒数で自動終了する */
+export const CLAP_NO_SPEECH_TIMEOUT_SEC = 15;
 
 export function useVoiceSession() {
   const [phase, setPhase] = useState<Phase>('idle');
@@ -58,6 +68,7 @@ export function useVoiceSession() {
     if (!a) return;
     setPhase('stopping');
     window.clearTimeout(a.maxTimer);
+    if (a.noSpeechTimer !== null) window.clearTimeout(a.noSpeechTimer);
     window.clearInterval(a.tickTimer);
     try {
       a.session.close();
@@ -72,7 +83,7 @@ export function useVoiceSession() {
     setPhase('idle');
   }, []);
 
-  const start = useCallback(async () => {
+  const start = useCallback(async (options: StartOptions = {}) => {
     if (startingRef.current || activeRef.current) return;
     startingRef.current = true;
     const gen = ++genRef.current;
@@ -120,10 +131,12 @@ export function useVoiceSession() {
         historyStoreAudio: false,
         config: {
           outputModalities: ['audio'],
+          ...(grant.reasoningEffort ? { reasoning: { effort: grant.reasoningEffort } } : {}),
           audio: {
             input: {
               transcription: { model: TRANSCRIPTION_MODEL, language: 'ja' },
-              turnDetection: { type: 'semantic_vad' },
+              // サーバーが client secret に設定したものと同じ値を使う（接続時に上書きされないように）
+              turnDetection: grant.turnDetection,
             },
             output: { voice: grant.voice },
           },
@@ -144,12 +157,19 @@ export function useVoiceSession() {
         tickTimer: window.setInterval(() => {
           setRemaining(Math.max(0, Math.ceil((maxMs - (Date.now() - startedAt)) / 1000)));
         }, 1000),
+        noSpeechTimer: null,
       };
       activeRef.current = active;
       stream = null; // 以降は active が所有
       setRemaining(grant.maxSessionSeconds);
 
       session.on('history_updated', (history) => setLines(toLines(history)));
+      session.on('transport_event', (ev) => {
+        if (ev.type === 'input_audio_buffer.speech_started' && active.noSpeechTimer !== null) {
+          window.clearTimeout(active.noSpeechTimer);
+          active.noSpeechTimer = null;
+        }
+      });
       session.on('error', (ev) => {
         if (activeRef.current !== active) return;
         void teardown({ error: `通信エラーが発生したため会話を終了しました（${describeSessionError(ev.error)}）。` });
@@ -168,6 +188,14 @@ export function useVoiceSession() {
       if (cancelled()) throw new CancelledError();
 
       if (transport.callId) void reportCall(leaseId, transport.callId);
+      if (options.trigger === 'clap') {
+        active.noSpeechTimer = window.setTimeout(() => {
+          if (activeRef.current !== active) return;
+          void teardown({
+            reason: `拍手で起動しましたが、${CLAP_NO_SPEECH_TIMEOUT_SEC}秒間話しかけがなかったため自動で終了しました（誤起動対策）。`,
+          });
+        }, CLAP_NO_SPEECH_TIMEOUT_SEC * 1000);
+      }
       setPhase('connected');
     } catch (e) {
       if (stream) stopStream(stream);

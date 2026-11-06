@@ -17,7 +17,9 @@ import {
   TRANSCRIPTION_MODEL,
   type ApiErrorBody,
   type HealthInfo,
+  type ReasoningEffort,
   type SessionGrant,
+  type TurnDetectionSetting,
 } from '../shared/assistant.js';
 
 // ---------- 設定 ----------
@@ -26,6 +28,13 @@ const PORT = intEnv('PORT', 8787, 1, 65535);
 const MODEL = strEnv('REALTIME_MODEL', 'gpt-realtime-2.1');
 const VOICE = strEnv('REALTIME_VOICE', 'marin');
 const MAX_SESSION_SECONDS = intEnv('MAX_SESSION_SECONDS', 300, 30, 1800);
+const TURN_DETECTION = turnDetectionFromEnv();
+/** 推論対応モデル（gpt-realtime-2 系）では推論量を抑えて返答までの待ち時間を短くする */
+const REASONING_EFFORT: ReasoningEffort | null = /^gpt-realtime-2/.test(MODEL)
+  ? enumEnv('REASONING_EFFORT', ['minimal', 'low', 'medium', 'high'] as const, 'low')
+  : null;
+/** API が reasoning 設定を受け付けなかった場合は以後送らない（従来動作に戻す） */
+let reasoningAccepted = REASONING_EFFORT !== null;
 /** client secret 自体の有効期限（接続開始にだけ使うので短く。API の下限は 10 秒） */
 const CLIENT_SECRET_TTL_SECONDS = 60;
 /** セッション作成の最小間隔（連打・ループ対策） */
@@ -133,22 +142,19 @@ app.post('/api/session', requireLocalOrigin, async (req, res) => {
   activeLease = lease;
 
   try {
-    const secret = await openai.realtime.clientSecrets.create({
-      expires_after: { anchor: 'created_at', seconds: CLIENT_SECRET_TTL_SECONDS },
-      session: {
-        type: 'realtime',
-        model: MODEL,
-        instructions: ASSISTANT_INSTRUCTIONS,
-        output_modalities: ['audio'],
-        audio: {
-          input: {
-            transcription: { model: TRANSCRIPTION_MODEL, language: 'ja' },
-            turn_detection: { type: 'semantic_vad' },
-          },
-          output: { voice: VOICE },
-        },
-      },
-    });
+    let secret: Awaited<ReturnType<typeof issueClientSecret>>;
+    try {
+      secret = await issueClientSecret(openai, reasoningAccepted ? REASONING_EFFORT : null);
+    } catch (err) {
+      // reasoning 設定が原因の 400 なら、設定なしで 1 回だけ再試行（従来の正常動作を壊さないため）
+      if (reasoningAccepted && err instanceof OpenAI.BadRequestError) {
+        reasoningAccepted = false;
+        log('reasoning setting rejected; retrying without it');
+        secret = await issueClientSecret(openai, null);
+      } else {
+        throw err;
+      }
+    }
     const body: SessionGrant = {
       leaseId: id,
       clientSecret: secret.value,
@@ -156,6 +162,8 @@ app.post('/api/session', requireLocalOrigin, async (req, res) => {
       model: MODEL,
       voice: VOICE,
       maxSessionSeconds: MAX_SESSION_SECONDS,
+      turnDetection: TURN_DETECTION,
+      reasoningEffort: reasoningAccepted ? REASONING_EFFORT : null,
     };
     log('client secret issued');
     res.json(body);
@@ -214,6 +222,7 @@ const server = app.listen(PORT, HOST, () => {
   log(`listening on http://${HOST}:${PORT}`);
   log(`OPENAI_API_KEY: ${openai ? '設定済み' : '未設定（UI とエラー表示の確認のみ可能）'}`);
   log(`model=${MODEL} voice=${VOICE} maxSessionSeconds=${MAX_SESSION_SECONDS}`);
+  log(`turnDetection=${JSON.stringify(TURN_DETECTION)} reasoningEffort=${REASONING_EFFORT ?? 'n/a'}`);
 });
 server.on('error', (err) => {
   log(`server error: ${describeError(err)}`);
@@ -228,7 +237,59 @@ function shutdown(): void {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
+// ---------- OpenAI 呼び出し ----------
+function issueClientSecret(client: OpenAI, effort: ReasoningEffort | null) {
+  const td = TURN_DETECTION;
+  return client.realtime.clientSecrets.create({
+    expires_after: { anchor: 'created_at', seconds: CLIENT_SECRET_TTL_SECONDS },
+    session: {
+      type: 'realtime',
+      model: MODEL,
+      instructions: ASSISTANT_INSTRUCTIONS,
+      output_modalities: ['audio'],
+      ...(effort ? { reasoning: { effort } } : {}),
+      audio: {
+        input: {
+          transcription: { model: TRANSCRIPTION_MODEL, language: 'ja' },
+          turn_detection:
+            td.type === 'semantic_vad'
+              ? { type: 'semantic_vad', eagerness: td.eagerness }
+              : {
+                  type: 'server_vad',
+                  silence_duration_ms: td.silenceDurationMs,
+                  prefix_padding_ms: td.prefixPaddingMs,
+                  threshold: td.threshold,
+                },
+        },
+        output: { voice: VOICE },
+      },
+    },
+  });
+}
+
+/**
+ * VAD（発話の区切り検出）設定。
+ * 既定は semantic_vad（発話内容から「言い終わり」を判定するため、途中で割り込みにくい）。
+ */
+function turnDetectionFromEnv(): TurnDetectionSetting {
+  const mode = enumEnv('VAD_MODE', ['semantic', 'server'] as const, 'semantic');
+  if (mode === 'server') {
+    return {
+      type: 'server_vad',
+      silenceDurationMs: intEnv('VAD_SILENCE_MS', 700, 200, 2000),
+      prefixPaddingMs: 300,
+      threshold: intEnv('VAD_THRESHOLD_PERCENT', 50, 10, 95) / 100,
+    };
+  }
+  return { type: 'semantic_vad', eagerness: enumEnv('VAD_EAGERNESS', ['low', 'medium', 'high', 'auto'] as const, 'medium') };
+}
+
 // ---------- ユーティリティ ----------
+function enumEnv<T extends string>(name: string, allowed: readonly T[], fallback: T): T {
+  const v = (process.env[name] ?? '').trim().toLowerCase();
+  return (allowed as readonly string[]).includes(v) ? (v as T) : fallback;
+}
+
 function sendError(res: Response, status: number, code: ApiErrorBody['code'], message: string): void {
   const body: ApiErrorBody = { code, message };
   res.status(status).json(body);
