@@ -1,69 +1,53 @@
 import { useEffect, useRef, useState } from 'react';
-import { ClapDetector, type TransientInfo } from './clapDetector';
+import { ClapDetector, type ClapProfile, type TransientInfo } from './clapDetector';
+import { MicError, openRawMic, type MicCapture, type MicProcessing } from './micCapture';
 
 /**
- * 拍手待機。マイク音声はブラウザ内の AudioWorklet で取り出し、ClapDetector で判定するだけで、
- * どこにも送信・保存しない。待機中は OpenAI API を一切呼ばない。
+ * 拍手待機。マイク音声はブラウザ内で判定するだけで、どこにも送信・保存しない。
+ * 待機中は OpenAI API を一切呼ばない（料金は発生しない）。
  */
 
 export type StandbyStatus = 'off' | 'starting' | 'listening' | 'first-clap' | 'paused' | 'error';
 
 export interface ClapStandbyOptions {
-  /** 待機スイッチ ON/OFF */
   enabled: boolean;
-  /** 音声通話中など、一時的に止める（マイクも解放する） */
+  /** 音声通話中・キャリブレーション中など、一時的に止める（マイクも解放する） */
   paused: boolean;
   sensitivity: number;
   maxIntervalMs: number;
-  onDoubleClap: () => void;
+  profile: ClapProfile;
+  onDoubleClap: (intervalMs: number) => void;
 }
 
 export interface Meter {
   levelDb: number;
   triggerDb: number;
+  floorDb: number;
 }
 
-// AudioWorklet：128 サンプルずつ届く入力を 2048 サンプルにまとめてメインスレッドへ渡すだけ
-const WORKLET_SOURCE = `
-class ClapTap extends AudioWorkletProcessor {
-  constructor() { super(); this.buf = new Float32Array(2048); this.n = 0; }
-  process(inputs) {
-    const ch = inputs[0] && inputs[0][0];
-    if (ch) {
-      for (let i = 0; i < ch.length; i++) {
-        this.buf[this.n++] = ch[i];
-        if (this.n === this.buf.length) {
-          this.port.postMessage(this.buf, [this.buf.buffer]);
-          this.buf = new Float32Array(2048);
-          this.n = 0;
-        }
-      }
-    }
-    return true;
-  }
-}
-registerProcessor('clap-tap', ClapTap);
-`;
+export type LogEntry =
+  | { id: number; at: number; kind: 'sound'; info: TransientInfo }
+  | { id: number; at: number; kind: 'note'; tone: 'ok' | 'warn' | 'info'; text: string };
 
-interface Running {
-  stream: MediaStream;
-  ctx: AudioContext;
-  detector: ClapDetector;
-  meterTimer: number;
-}
+type NewLogEntry =
+  | { kind: 'sound'; info: TransientInfo }
+  | { kind: 'note'; tone: 'ok' | 'warn' | 'info'; text: string };
+
+const LOG_MAX = 8;
 
 export function useClapStandby(opts: ClapStandbyOptions) {
-  const { enabled, paused, sensitivity, maxIntervalMs } = opts;
+  const { enabled, paused, sensitivity, maxIntervalMs, profile } = opts;
   const [status, setStatus] = useState<StandbyStatus>('off');
   const [error, setError] = useState<string | null>(null);
   const [meter, setMeter] = useState<Meter | null>(null);
-  const [lastSound, setLastSound] = useState<TransientInfo | null>(null);
-  const [lastNote, setLastNote] = useState<string | null>(null);
-  const runningRef = useRef<Running | null>(null);
+  const [log, setLog] = useState<LogEntry[]>([]);
+  const [processing, setProcessing] = useState<MicProcessing | null>(null);
+  const micRef = useRef<{ mic: MicCapture; detector: ClapDetector; timer: number } | null>(null);
   const onDoubleRef = useRef(opts.onDoubleClap);
   onDoubleRef.current = opts.onDoubleClap;
-  const settingsRef = useRef({ sensitivity, maxIntervalMs });
-  settingsRef.current = { sensitivity, maxIntervalMs };
+  const settingsRef = useRef({ sensitivity, maxIntervalMs, profile });
+  settingsRef.current = { sensitivity, maxIntervalMs, profile };
+  const idRef = useRef(0);
 
   const active = enabled && !paused;
 
@@ -76,114 +60,73 @@ export function useClapStandby(opts: ClapStandbyOptions) {
     let cancelled = false;
     setStatus('starting');
     setError(null);
+    const push = (e: NewLogEntry) =>
+      setLog((l) => [{ ...e, id: ++idRef.current, at: Date.now() }, ...l].slice(0, LOG_MAX));
 
-    (async () => {
-      let stream: MediaStream | null = null;
-      let ctx: AudioContext | null = null;
-      try {
-        if (!navigator.mediaDevices?.getUserMedia || !window.AudioWorkletNode) {
-          throw new Error('このブラウザでは拍手待機を使用できません。Windows の Chrome で開いてください。');
+    let detector: ClapDetector | null = null;
+    openRawMic((samples) => {
+      if (!detector) return;
+      for (const e of detector.process(samples)) {
+        if (e.type === 'transient') push({ kind: 'sound', info: e.info });
+        else if (e.type === 'activity') push({ kind: 'note', tone: 'info', text: '話し声などの続く音を検知（拍手の判定は一時停止）' });
+        else if (e.type === 'first-clap') {
+          setStatus('first-clap');
+          push({ kind: 'note', tone: 'info', text: '1回目の拍手を検知。もう1回叩いてください。' });
+        } else if (e.type === 'sequence-cancelled') {
+          setStatus('listening');
+          push({ kind: 'note', tone: 'warn', text: `取り消し：${e.reason}` });
+        } else if (e.type === 'double-clap') {
+          setStatus('listening');
+          push({ kind: 'note', tone: 'ok', text: `拍手2回を検知しました（間隔 ${(e.intervalMs / 1000).toFixed(2)} 秒）` });
+          onDoubleRef.current(e.intervalMs);
         }
-        try {
-          // 拍手の鋭い音を消さないよう、ブラウザの音声加工はすべてオフにする
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-          });
-        } catch (e) {
-          const name = e instanceof DOMException ? e.name : '';
-          throw new Error(
-            name === 'NotAllowedError' || name === 'SecurityError'
-              ? 'マイクの使用が許可されませんでした。アドレスバー左のアイコンからマイクを「許可」にしてください。'
-              : 'マイクを取得できませんでした。マイクの接続と、他のアプリが使用していないかを確認してください。',
-          );
-        }
-        if (cancelled) return stopStream(stream);
-
-        ctx = new AudioContext();
-        if (ctx.state === 'suspended') await ctx.resume().catch(() => undefined);
-        const url = URL.createObjectURL(new Blob([WORKLET_SOURCE], { type: 'application/javascript' }));
-        try {
-          await ctx.audioWorklet.addModule(url);
-        } finally {
-          URL.revokeObjectURL(url);
-        }
-        if (cancelled) {
-          stopStream(stream);
-          void ctx.close();
-          return;
-        }
-
-        const detector = new ClapDetector({ sampleRate: ctx.sampleRate, ...settingsRef.current });
-        const source = ctx.createMediaStreamSource(stream);
-        const tap = new AudioWorkletNode(ctx, 'clap-tap', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1 });
-        const mute = ctx.createGain();
-        mute.gain.value = 0; // 処理を継続させるため出力に繋ぐが、音は出さない
-        source.connect(tap).connect(mute).connect(ctx.destination);
-
-        tap.port.onmessage = (ev: MessageEvent<Float32Array>) => {
-          if (runningRef.current?.detector !== detector) return;
-          for (const e of detector.process(ev.data)) {
-            if (e.type === 'transient') setLastSound(e.info);
-            else if (e.type === 'first-clap') {
-              setStatus('first-clap');
-              setLastNote('1回目の拍手を検知。もう1回叩いてください。');
-            } else if (e.type === 'sequence-cancelled') {
-              setStatus('listening');
-              setLastNote(`取り消し：${e.reason}`);
-            } else if (e.type === 'double-clap') {
-              setLastNote('拍手2回を検知しました。会話を開始します。');
-              onDoubleRef.current();
-            }
-          }
-        };
-
-        const meterTimer = window.setInterval(() => {
-          setMeter({ levelDb: detector.levelDb, triggerDb: detector.triggerLevelDb });
-        }, 100);
-        runningRef.current = { stream, ctx, detector, meterTimer };
-        setStatus('listening');
-      } catch (e) {
-        if (stream) stopStream(stream);
-        if (ctx) void ctx.close().catch(() => undefined);
-        if (cancelled) return;
-        setError(e instanceof Error ? e.message : '拍手待機を開始できませんでした。');
-        setStatus('error');
       }
-    })();
+    })
+      .then((mic) => {
+        if (cancelled) return mic.close();
+        detector = new ClapDetector({ sampleRate: mic.sampleRate, ...settingsRef.current });
+        const d = detector;
+        const timer = window.setInterval(() => {
+          setMeter({ levelDb: d.levelDb, triggerDb: d.triggerLevelDb, floorDb: d.noiseFloorDb });
+        }, 80);
+        micRef.current = { mic, detector: d, timer };
+        setProcessing(mic.processing);
+        setStatus('listening');
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setError(e instanceof MicError ? e.message : '拍手待機を開始できませんでした。');
+        setStatus('error');
+      });
 
     return () => {
       cancelled = true;
-      release(runningRef);
+      release(micRef);
     };
   }, [active, enabled]);
 
-  // 感度・間隔の変更は再起動せずに反映
+  // 感度・間隔・基準の変更は再起動せずに反映
   useEffect(() => {
-    runningRef.current?.detector.setOptions({ sensitivity, maxIntervalMs });
-  }, [sensitivity, maxIntervalMs]);
+    micRef.current?.detector.setOptions({ sensitivity, maxIntervalMs, profile });
+  }, [sensitivity, maxIntervalMs, profile]);
 
   // タブを閉じる・移動するときはマイクを解放
   useEffect(() => {
-    const onPageHide = () => release(runningRef);
+    const onPageHide = () => release(micRef);
     window.addEventListener('pagehide', onPageHide);
     return () => {
       window.removeEventListener('pagehide', onPageHide);
-      release(runningRef);
+      release(micRef);
     };
   }, []);
 
-  return { status, error, meter, lastSound, lastNote };
+  return { status, error, meter, log, processing, clearLog: () => setLog([]) };
 }
 
-function release(ref: { current: Running | null }): void {
+function release(ref: { current: { mic: MicCapture; timer: number } | null }): void {
   const r = ref.current;
   ref.current = null;
   if (!r) return;
-  window.clearInterval(r.meterTimer);
-  stopStream(r.stream);
-  void r.ctx.close().catch(() => undefined);
-}
-
-function stopStream(stream: MediaStream): void {
-  for (const t of stream.getTracks()) t.stop();
+  window.clearInterval(r.timer);
+  r.mic.close();
 }

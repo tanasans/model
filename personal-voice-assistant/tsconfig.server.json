@@ -12,13 +12,10 @@
     "noUnusedLocals": true,
     "types": [
       "node"
-    ],
-    "allowImportingTsExtensions": true
+    ]
   },
   "include": [
     "server",
-    "shared",
-    "tests",
-    "src/clap/clapDetector.ts"
+    "shared"
   ]
 }

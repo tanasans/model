@@ -1,146 +1,218 @@
 /**
- * 拍手 2 回の検出ロジック（ブラウザ内で完結。外部送信なし）。
+ * 拍手 2 回の検出ロジック（v3）。ブラウザ内で完結し、外部送信はしない。
  *
- * 音声サンプルを約 5ms のフレームに区切り、次の条件をすべて満たす「短く鋭い高めの音」を拍手とみなす。
- *  1. 大きさ   : フレームの音量（RMS）が絶対しきい値以上、かつ周囲の騒音レベル＋一定 dB 以上
- *  2. 立ち上がり: 直前 15ms と比べて急激に大きくなった（話し声・物音のゆっくりした立ち上がりを除外）
- *  3. 短さ     : ピークから 12dB 下がるまでが短い（話し声・音楽など続く音を除外）
- *  4. 音の高さ : 周波数重心が一定以上（机に物を置く「ドン」という低い音を除外）
- * さらに 2 回の並び方で判定する。
- *  - 1 回目の前に一定時間「大きな音」がない（会話・タイピングの途中では反応しない）
- *  - 2 回の間隔が最小〜最大間隔の範囲内、2 回の大きさが近い
- *  - 2 回目の後、確認時間内に 3 回目の音がない（タイピング等の連続音を除外）
+ * v2 からの主な変更（実機で「立ち上がりが緩やか」「途中で別の音があった」と誤判定された問題の対策）
+ *  - 拍手の「残響（部屋の響き）」を新しい音と誤認して 2 回の並びを取り消していた。
+ *    → 拍手の後は「余韻」状態として扱い、余韻の中から新しい鋭い音（2 回目の拍手）だけを拾う。
+ *  - 立ち上がりを「直前 15ms の最小値」と比較しており、フレーム境界や残響の影響で過剰に除外していた。
+ *    → 直前 7.5〜30ms の平均と比較し（急激な変化）、ピークまでの時間も別に評価する。
+ *  - 判定に使う特徴を増やし、すべて画面に表示できるようにした。
+ *
+ * 1 つの音について評価する特徴
+ *  1. 大きさ     : ピーク（2.5ms フレームの RMS）が基準以上、かつ周囲の騒音より十分大きい
+ *  2. 急な変化   : 直前の音量からの増加量（dB）
+ *  3. 立ち上がり : 音の始まりからピークまでの時間（ms）
+ *  4. 短さ       : ピークから 30〜60ms 後にどれだけ小さくなったか（dB）。話し声は小さくならない
+ *  5. 音の高さ   : 立ち上がり部分の周波数重心（Hz）。机に物を置く低い音を除外
+ * 並び方の条件
+ *  - 1 回目の前に話し声などの続く音がない
+ *  - 2 回の間隔が最小〜最大間隔の範囲内で、大きさが近い
+ *  - 2 回目の後、確認時間内に 3 回目の鋭い音がない（タイピング・連続音を除外）
  */
+
+/** 判定基準（キャリブレーションで変わる部分） */
+export interface ClapProfile {
+  /** ピークの最小レベル（dBFS） */
+  minLevelDb: number;
+  /** 周囲の騒音レベルからの最小上昇量（dB） */
+  minAboveFloorDb: number;
+  /** 急な変化：直前からの最小増加量（dB） */
+  minJumpDb: number;
+  /** 立ち上がり：ピークまでの最大時間（ms） */
+  maxRiseMs: number;
+  /** 短さ：ピーク後の最小減衰量（dB） */
+  minDecayDb: number;
+  /** 音の高さ：周波数重心の最小値（Hz） */
+  minCentroidHz: number;
+  /** 尖り：最大振幅÷RMS の上限。キーボードの針のように細いクリック音を除外 */
+  maxCrest: number;
+}
+
+export const DEFAULT_PROFILE: ClapProfile = {
+  minLevelDb: -34,
+  minAboveFloorDb: 16,
+  minJumpDb: 10,
+  maxRiseMs: 20,
+  minDecayDb: 4,
+  minCentroidHz: 900,
+  maxCrest: 8,
+};
 
 export interface ClapDetectorOptions {
   sampleRate: number;
-  /** 感度 1（鈍い）〜 10（敏感）。既定 5 */
+  /** 感度 1（鈍い）〜 10（敏感）。基準を全体的に緩める／厳しくする。既定 5 */
   sensitivity: number;
-  /** 1 回目と 2 回目の最大間隔（ms）。既定 600 */
+  /** 1 回目と 2 回目の最大間隔（ms） */
   maxIntervalMs: number;
+  /** 判定基準。省略時は DEFAULT_PROFILE */
+  profile?: ClapProfile;
+  /** true の場合、2 回の並びは判定せず、音ごとの特徴だけを出す（キャリブレーション用） */
+  featuresOnly?: boolean;
+}
+
+export type CheckKey = 'level' | 'jump' | 'rise' | 'decay' | 'pitch' | 'crest';
+
+export interface FeatureCheck {
+  key: CheckKey;
+  label: string;
+  value: number;
+  threshold: number;
+  unit: string;
+  /** 'min' は値が基準以上で合格、'max' は基準以下で合格 */
+  kind: 'min' | 'max';
+  pass: boolean;
 }
 
 export interface TransientInfo {
   timeMs: number;
-  /** フレーム RMS のピーク（dBFS） */
   levelDb: number;
-  /** 周波数重心の推定値（Hz） */
+  jumpDb: number;
+  riseMs: number;
+  decayDb: number;
   centroidHz: number;
-  /** 音の長さ（ms） */
-  durationMs: number;
+  /** 尖り具合（最大振幅 ÷ RMS、始まりから 10ms） */
+  crest: number;
+  checks: FeatureCheck[];
   accepted: boolean;
-  /** 不採用の理由（日本語） */
+  /** 不採用の理由（分かりやすい日本語） */
   reason?: string;
 }
 
 export type DetectorEvent =
   | { type: 'transient'; info: TransientInfo }
+  | { type: 'activity'; timeMs: number; durationMs: number }
   | { type: 'first-clap'; timeMs: number }
   | { type: 'sequence-cancelled'; timeMs: number; reason: string }
-  | { type: 'double-clap'; timeMs: number };
+  | { type: 'double-clap'; timeMs: number; intervalMs: number };
 
-/** 判定に使う固定パラメータ（テストや調整用に公開） */
 export const CLAP_CONSTANTS = {
-  frameMs: 5,
-  /** 直前何 ms と比較して立ち上がりの鋭さを見るか */
-  attackLookbackMs: 15,
-  /** 立ち上がりに必要な増加量（dB） */
-  attackDb: 15,
-  /** ピークからこの dB 下がったら音の終わり */
-  decayDb: 12,
-  /** これより長い音は拍手ではない（ms） */
-  maxDurationMs: 150,
-  /** 周波数重心の下限（Hz）。低い「ドン」を除外 */
-  minCentroidHz: 1500,
-  /** 1 回目の前に必要な静かな時間（ms） */
-  preQuietMs: 400,
-  /** 2 回の最小間隔（ms）。反響の二重検出を除外 */
+  frameMs: 2.5,
+  /** 「直前の音量」として平均する範囲（現在から何 ms 前〜何 ms 前） */
+  preFromMs: 30,
+  preToMs: 7.5,
+  /** ピークを探す範囲（音の始まりから） */
+  peakSearchMs: 30,
+  /** 減衰を測る範囲（ピークから） */
+  decayFromMs: 30,
+  decayToMs: 60,
+  /** これ以上続く大きな音は「話し声などの続く音」 */
+  activityMs: 150,
+  /** 拍手の余韻として扱う最大時間 */
+  maxTailMs: 700,
+  /** 1 回目の前に必要な、話し声などの続く音がない時間 */
+  preQuietMs: 300,
+  /** 1 回目の前に必要な、ほかの鋭い音（タイピング等）がない時間 */
+  preSharpQuietMs: 800,
   minIntervalMs: 120,
-  /** 2 回目の後、3 回目が来ないことを確認する時間（ms） */
-  confirmMs: 350,
-  /** 2 回の大きさの差の上限（dB） */
-  maxLevelDiffDb: 10,
-  /** 開始直後に騒音レベルを学習する時間（ms）。この間は検出しない */
-  warmupMs: 800,
+  /** 2 回目の後、3 回目が来ないことを確認する時間 */
+  confirmMs: 300,
+  maxLevelDiffDb: 12,
+  warmupMs: 600,
 } as const;
 
-/** 感度 → しきい値。感度が高いほど小さな音でも反応する */
-export function thresholdsFor(sensitivity: number): { minLevelDb: number; riseDb: number } {
-  const s = Math.min(10, Math.max(1, Math.round(sensitivity)));
+/** 感度による基準の調整（5 が基準そのもの） */
+export function effectiveProfile(base: ClapProfile, sensitivity: number): ClapProfile {
+  const k = Math.min(10, Math.max(1, Math.round(sensitivity))) - 5;
   return {
-    // 感度5で -24dBFS（目安：1m 程度離れた普通の拍手）。1 段階 2.5dB
-    minLevelDb: -24 - (s - 5) * 2.5,
-    // 周囲の騒音レベルからの上昇量
-    riseDb: 22 - (s - 5) * 1.5,
+    minLevelDb: base.minLevelDb - k * 2.5,
+    minAboveFloorDb: Math.max(6, base.minAboveFloorDb - k * 1.2),
+    minJumpDb: Math.max(4, base.minJumpDb - k * 0.8),
+    maxRiseMs: base.maxRiseMs + k * 1.5,
+    minDecayDb: Math.max(1, base.minDecayDb - k * 0.6),
+    minCentroidHz: Math.max(200, base.minCentroidHz * (1 - k * 0.07)),
+    maxCrest: base.maxCrest + k * 0.3,
   };
+}
+
+const CHECK_TEXT: Record<CheckKey, { label: string; fail: string }> = {
+  level: { label: '大きさ', fail: '音が小さい（反応ラインに届かない）' },
+  jump: { label: '急な変化', fail: '急に大きくなっていない（話し声・徐々に大きくなる音）' },
+  rise: { label: '立ち上がり', fail: 'ピークまでが遅い（話し声・物音）' },
+  decay: { label: '短さ', fail: '音がすぐに消えない（話し声・音楽など続く音）' },
+  pitch: { label: '音の高さ', fail: '音が低い（物を置く音・足音など）' },
+  crest: { label: '尖り', fail: '針のように細い音（キーボード・カチッという音）' },
+};
+
+interface Frame {
+  db: number;
+  energy: number;
+  diffEnergy: number;
+  peakAbs: number;
+  n: number;
+}
+
+interface Candidate {
+  startIdx: number;
+  preDb: number;
+  frames: Frame[];
 }
 
 type Sequence =
   | { state: 'idle' }
   | { state: 'one'; t1: number; level1: number }
-  | { state: 'two'; t2: number };
-
-interface Candidate {
-  startMs: number;
-  peakDb: number;
-  /** 立ち上がり直後の数フレームの周波数特性（エネルギー加重） */
-  energy: number;
-  diffEnergy: number;
-  frames: number;
-  /** 'noise' は拍手ではない大きな音（話し声など）を最後まで追跡しているもの */
-  kind: 'candidate' | 'noise';
-  rejectReason?: string;
-  peakFrameReported: boolean;
-}
+  | { state: 'two'; t1: number; t2: number };
 
 export class ClapDetector {
   private opts: ClapDetectorOptions;
-  private frameSize: number;
+  private eff: ClapProfile;
+  private readonly frameSize: number;
+  private readonly frameMs: number;
   private frameBuf: Float32Array;
   private frameFill = 0;
   private lastSample = 0;
-  private samplesSeen = 0;
-  private floorDb = -60;
-  private recentDb: number[] = [];
-  private lookbackFrames: number;
-  private current: Candidate | null = null;
+  private frameIdx = 0;
+  /** 直近 ~100ms のフレーム dB（リングバッファ） */
+  private hist: number[] = [];
+  private readonly histLen: number;
+  private floorDb = -70;
+  private mode: 'idle' | 'candidate' | 'tail' = 'idle';
+  private cand: Candidate | null = null;
+  private tailStartIdx = 0;
+  private loudRunFrames = 0;
+  private activityReported = false;
   private seq: Sequence = { state: 'idle' };
-  /** 最後に「大きな音（拍手以外も含む）」があった時刻 */
-  private lastNoiseMs = -Infinity;
+  private lastActivityMs = -Infinity;
+  private lastSharpMs = -Infinity;
   private _levelDb = -100;
 
   constructor(opts: ClapDetectorOptions) {
     this.opts = { ...opts };
-    this.frameSize = Math.max(32, Math.round((opts.sampleRate * CLAP_CONSTANTS.frameMs) / 1000));
+    this.eff = effectiveProfile(opts.profile ?? DEFAULT_PROFILE, opts.sensitivity);
+    this.frameSize = Math.max(16, Math.round((opts.sampleRate * CLAP_CONSTANTS.frameMs) / 1000));
+    this.frameMs = (this.frameSize / opts.sampleRate) * 1000;
     this.frameBuf = new Float32Array(this.frameSize);
-    this.lookbackFrames = Math.max(1, Math.round(CLAP_CONSTANTS.attackLookbackMs / CLAP_CONSTANTS.frameMs));
+    this.histLen = Math.ceil(100 / this.frameMs);
   }
 
-  /** 直近フレームの音量（dBFS）。メーター表示用 */
   get levelDb(): number {
     return this._levelDb;
   }
-
-  /** 周囲の騒音レベル（dBFS）。メーター表示用 */
   get noiseFloorDb(): number {
     return this.floorDb;
   }
-
-  /** 現在の感度での反応しきい値（dBFS）。メーター表示用 */
+  /** 反応ライン（dBFS）：大きさの条件を満たす最小レベル */
   get triggerLevelDb(): number {
-    const th = thresholdsFor(this.opts.sensitivity);
-    return Math.max(th.minLevelDb, this.floorDb + th.riseDb);
+    return Math.max(this.eff.minLevelDb, this.floorDb + this.eff.minAboveFloorDb);
   }
-
-  get waitingForSecond(): boolean {
-    return this.seq.state !== 'idle';
+  get profile(): ClapProfile {
+    return this.eff;
   }
 
   setOptions(partial: Partial<Omit<ClapDetectorOptions, 'sampleRate'>>): void {
     this.opts = { ...this.opts, ...partial };
+    this.eff = effectiveProfile(this.opts.profile ?? DEFAULT_PROFILE, this.opts.sensitivity);
   }
 
-  /** 任意長のサンプル列を処理し、発生したイベントを返す */
   process(samples: Float32Array): DetectorEvent[] {
     const events: DetectorEvent[] = [];
     for (let i = 0; i < samples.length; i++) {
@@ -153,8 +225,24 @@ export class ClapDetector {
     return events;
   }
 
-  private nowMs(): number {
-    return (this.samplesSeen / this.opts.sampleRate) * 1000;
+  private t(idx = this.frameIdx): number {
+    return idx * this.frameMs;
+  }
+
+  /** 現在フレームより preToMs〜preFromMs 前の平均レベル（dB） */
+  private preLevelDb(): number {
+    const from = Math.round(CLAP_CONSTANTS.preFromMs / this.frameMs);
+    const to = Math.round(CLAP_CONSTANTS.preToMs / this.frameMs);
+    const h = this.hist;
+    let sum = 0;
+    let n = 0;
+    for (let k = to; k <= from; k++) {
+      const v = h[h.length - k];
+      if (v === undefined) continue;
+      sum += Math.pow(10, v / 10);
+      n++;
+    }
+    return n ? 10 * Math.log10(sum / n + 1e-12) : this.floorDb;
   }
 
   private processFrame(events: DetectorEvent[]): void {
@@ -162,151 +250,254 @@ export class ClapDetector {
     let energy = 0;
     let diffEnergy = 0;
     let prev = this.lastSample;
+    let peakAbs = 0;
     for (let i = 0; i < buf.length; i++) {
       const x = buf[i]!;
       energy += x * x;
+      const ax = x < 0 ? -x : x;
+      if (ax > peakAbs) peakAbs = ax;
       const d = x - prev;
       diffEnergy += d * d;
       prev = x;
     }
     this.lastSample = prev;
-    this.samplesSeen += buf.length;
-    const t = this.nowMs();
-    const rms = Math.sqrt(energy / buf.length);
-    const db = 20 * Math.log10(rms + 1e-9);
+    const ms = energy / buf.length;
+    const db = 10 * Math.log10(ms + 1e-12);
     this._levelDb = db;
+    const frame: Frame = { db, energy, diffEnergy, peakAbs, n: buf.length };
+    const now = this.t();
+    const warm = now < CLAP_CONSTANTS.warmupMs;
+    const e = this.eff;
+    const loud = db >= e.minLevelDb && db >= this.floorDb + e.minAboveFloorDb;
+    const jump = db - this.preLevelDb();
+    const onset = !warm && loud && jump >= e.minJumpDb;
 
-    const th = thresholdsFor(this.opts.sensitivity);
-    const warm = t < CLAP_CONSTANTS.warmupMs;
-
-    if (this.current) {
-      this.trackEvent(this.current, db, energy, diffEnergy, t, events);
-    } else if (!warm && db >= th.minLevelDb && db >= this.floorDb + th.riseDb) {
-      const before = this.recentDb.length ? Math.min(...this.recentDb) : this.floorDb;
-      const sharp = db - before >= CLAP_CONSTANTS.attackDb;
-      this.current = {
-        startMs: t,
-        peakDb: db,
-        energy,
-        diffEnergy,
-        frames: 1,
-        kind: sharp ? 'candidate' : 'noise',
-        rejectReason: sharp ? undefined : '立ち上がりが緩やか（話し声・物音など）',
-        peakFrameReported: false,
-      };
+    if (this.mode === 'candidate' && this.cand) {
+      this.cand.frames.push(frame);
+      if (this.candidateComplete(this.cand)) this.finalize(this.cand, events);
+    } else if (this.mode === 'tail') {
+      const tailMs = now - this.t(this.tailStartIdx);
+      if (onset) {
+        this.startCandidate(frame, jump);
+      } else if (db < this.floorDb + e.minAboveFloorDb / 2 || (!loud && tailMs > 200)) {
+        this.mode = 'idle';
+      } else if (tailMs > CLAP_CONSTANTS.maxTailMs) {
+        // 余韻にしては長すぎる → 話し声などが続いている
+        this.mode = 'idle';
+        this.loudRunFrames = Math.round(CLAP_CONSTANTS.activityMs / this.frameMs);
+      }
     } else {
-      // 騒音レベルの学習（下がるときは速く、上がるときはゆっくり）
-      const a = warm ? 0.3 : db < this.floorDb ? 0.2 : 0.01;
-      this.floorDb = Math.max(-90, this.floorDb + a * (db - this.floorDb));
+      if (onset) {
+        this.startCandidate(frame, jump);
+      } else if (loud && !warm) {
+        this.loudRunFrames++;
+        const runMs = this.loudRunFrames * this.frameMs;
+        if (runMs >= CLAP_CONSTANTS.activityMs && !this.activityReported) {
+          this.activityReported = true;
+          events.push({ type: 'activity', timeMs: now, durationMs: Math.round(runMs) });
+          this.onActivity(now, '話し声などの続く音', events);
+        } else if (this.activityReported) {
+          this.lastActivityMs = now;
+        }
+      } else {
+        this.loudRunFrames = 0;
+        this.activityReported = false;
+        // 騒音レベルの学習（下がるときは速く、上がるときはゆっくり）
+        const a = warm ? 0.2 : db < this.floorDb ? 0.1 : 0.004;
+        this.floorDb = Math.max(-100, this.floorDb + a * (db - this.floorDb));
+      }
     }
 
-    this.recentDb.push(db);
-    if (this.recentDb.length > this.lookbackFrames) this.recentDb.shift();
-
-    this.advanceSequence(t, events);
+    this.hist.push(db);
+    if (this.hist.length > this.histLen) this.hist.shift();
+    this.frameIdx++;
+    if (!this.opts.featuresOnly) this.advanceSequence(now, events);
   }
 
-  private trackEvent(
-    c: Candidate,
-    db: number,
-    energy: number,
-    diffEnergy: number,
-    t: number,
-    events: DetectorEvent[],
-  ): void {
-    c.frames++;
-    if (db > c.peakDb) c.peakDb = db;
-    // 立ち上がり直後（約 20ms）の音色だけを評価する（残響の影響を減らす）
-    if (c.frames <= 4) {
-      c.energy += energy;
-      c.diffEnergy += diffEnergy;
-    }
-    const duration = t - c.startMs;
-    const th = thresholdsFor(this.opts.sensitivity);
-    const ended = db < c.peakDb - CLAP_CONSTANTS.decayDb || db < this.floorDb + th.riseDb / 2;
+  private startCandidate(frame: Frame, jump: number): void {
+    this.mode = 'candidate';
+    this.cand = { startIdx: this.frameIdx, preDb: frame.db - jump, frames: [frame] };
+    this.loudRunFrames = 0;
+    this.activityReported = false;
+  }
 
-    if (c.kind === 'candidate' && !ended && duration > CLAP_CONSTANTS.maxDurationMs) {
-      c.kind = 'noise';
-      c.rejectReason = '音が長い（話し声・音楽など）';
-    }
-    if (!ended) return;
+  private peakIndex(c: Candidate): number {
+    const lim = Math.min(c.frames.length, Math.round(CLAP_CONSTANTS.peakSearchMs / this.frameMs) + 1);
+    let pi = 0;
+    for (let i = 1; i < lim; i++) if (c.frames[i]!.db > c.frames[pi]!.db) pi = i;
+    return pi;
+  }
 
-    this.current = null;
-    const centroidHz = this.centroidHz(c.energy, c.diffEnergy);
-    let accepted = c.kind === 'candidate';
-    let reason = c.rejectReason;
-    if (accepted && centroidHz < CLAP_CONSTANTS.minCentroidHz) {
-      accepted = false;
-      reason = '音が低い（物を置く音など）';
+  private candidateComplete(c: Candidate): boolean {
+    const needAfterPeak = Math.round(CLAP_CONSTANTS.decayToMs / this.frameMs);
+    const peakWindow = Math.round(CLAP_CONSTANTS.peakSearchMs / this.frameMs) + 1;
+    if (c.frames.length < peakWindow) return false;
+    return c.frames.length > this.peakIndex(c) + needAfterPeak;
+  }
+
+  private finalize(c: Candidate, events: DetectorEvent[]): void {
+    const e = this.eff;
+    const pi = this.peakIndex(c);
+    const peak = c.frames[pi]!;
+    const from = pi + Math.round(CLAP_CONSTANTS.decayFromMs / this.frameMs);
+    const to = pi + Math.round(CLAP_CONSTANTS.decayToMs / this.frameMs);
+    let sum = 0;
+    let n = 0;
+    for (let i = from; i <= to && i < c.frames.length; i++) {
+      sum += Math.pow(10, c.frames[i]!.db / 10);
+      n++;
     }
-    const info: TransientInfo = {
-      timeMs: c.startMs,
-      levelDb: round1(c.peakDb),
-      centroidHz: Math.round(centroidHz),
-      durationMs: Math.round(duration),
-      accepted,
-      reason,
-    };
+    const laterDb = n ? 10 * Math.log10(sum / n + 1e-12) : peak.db;
+    // 音色は立ち上がり〜ピーク直後（残響の影響が少ない部分）で評価
+    let en = 0;
+    let df = 0;
+    for (let i = 0; i <= Math.min(c.frames.length - 1, pi + 2); i++) {
+      en += c.frames[i]!.energy;
+      df += c.frames[i]!.diffEnergy;
+    }
+    // 尖り具合：始まりから 10ms の「最大振幅 ÷ 平均振幅（RMS）」。キーボードのクリック音は細い針状で大きくなる
+    const crestFrames = Math.max(1, Math.round(10 / this.frameMs));
+    let cE = 0;
+    let cN = 0;
+    let cP = 0;
+    for (let i = 0; i < crestFrames && i < c.frames.length; i++) {
+      cE += c.frames[i]!.energy;
+      cN += c.frames[i]!.n;
+      cP = Math.max(cP, c.frames[i]!.peakAbs);
+    }
+    const crest = cP / Math.sqrt(cE / Math.max(1, cN) + 1e-12);
+    const info = this.buildInfo({
+      timeMs: this.t(c.startIdx),
+      levelDb: peak.db,
+      jumpDb: peak.db - c.preDb,
+      riseMs: pi * this.frameMs,
+      decayDb: peak.db - laterDb,
+      centroidHz: this.centroidHz(en, df),
+      crest,
+    }, e);
     events.push({ type: 'transient', info });
-    if (accepted) this.onClap(c.startMs, c.peakDb, events);
-    else this.onNoise(t, reason ?? '拍手以外の音', events);
+
+    this.cand = null;
+    this.mode = 'tail';
+    this.tailStartIdx = this.frameIdx;
+    if (this.opts.featuresOnly) return;
+    if (info.accepted) this.onClap(info.timeMs, info.levelDb, events);
+    else this.onSharpNoise(info.timeMs, info.reason ?? '拍手以外の音', events);
+    // 大きさと急な変化を満たす音は「鋭い音」として記録（直後の 1 回目を数えないため）
+    if (info.checks[0]!.pass && info.checks[1]!.pass) this.lastSharpMs = info.timeMs;
   }
 
-  /** 1 次差分のエネルギー比から周波数重心を推定する（正弦波なら厳密にその周波数になる） */
+  private buildInfo(
+    v: Omit<TransientInfo, 'checks' | 'accepted' | 'reason'>,
+    e: ClapProfile,
+  ): TransientInfo {
+    const levelTh = Math.max(e.minLevelDb, this.floorDb + e.minAboveFloorDb);
+    const mk = (key: CheckKey, value: number, threshold: number, unit: string, kind: 'min' | 'max'): FeatureCheck => ({
+      key,
+      label: CHECK_TEXT[key].label,
+      value: round1(value),
+      threshold: round1(threshold),
+      unit,
+      kind,
+      pass: kind === 'min' ? value >= threshold : value <= threshold,
+    });
+    const checks = [
+      mk('level', v.levelDb, levelTh, 'dB', 'min'),
+      mk('jump', v.jumpDb, e.minJumpDb, 'dB', 'min'),
+      mk('rise', v.riseMs, e.maxRiseMs, 'ms', 'max'),
+      mk('decay', v.decayDb, e.minDecayDb, 'dB', 'min'),
+      mk('pitch', v.centroidHz, e.minCentroidHz, 'Hz', 'min'),
+      mk('crest', v.crest, e.maxCrest, '', 'max'),
+    ];
+    const failed = checks.filter((c) => !c.pass);
+    return {
+      ...v,
+      levelDb: round1(v.levelDb),
+      jumpDb: round1(v.jumpDb),
+      riseMs: round1(v.riseMs),
+      decayDb: round1(v.decayDb),
+      centroidHz: Math.round(v.centroidHz),
+      crest: round1(v.crest),
+      checks,
+      accepted: failed.length === 0,
+      reason: failed.length ? failed.map((c) => CHECK_TEXT[c.key].fail).join('／') : undefined,
+    };
+  }
+
+  /** 1 次差分のエネルギー比から周波数重心を推定する */
   private centroidHz(energy: number, diffEnergy: number): number {
     if (energy <= 0) return 0;
-    const r = Math.min(4, diffEnergy / energy); // = 2(1 - cos ω)
+    const r = Math.min(4, diffEnergy / energy);
     const cos = Math.min(1, Math.max(-1, 1 - r / 2));
     return (Math.acos(cos) * this.opts.sampleRate) / (2 * Math.PI);
   }
 
+  // ---------- 2 回の並び ----------
   private onClap(t: number, level: number, events: DetectorEvent[]): void {
     const seq = this.seq;
     if (seq.state === 'idle') {
-      if (t - this.lastNoiseMs >= CLAP_CONSTANTS.preQuietMs) {
+      const quietActivity = t - this.lastActivityMs >= CLAP_CONSTANTS.preQuietMs;
+      const quietSharp = t - this.lastSharpMs >= CLAP_CONSTANTS.preSharpQuietMs;
+      if (quietActivity && quietSharp) {
         this.seq = { state: 'one', t1: t, level1: level };
         events.push({ type: 'first-clap', timeMs: t });
       } else {
-        // 直前に別の音があった（会話・タイピングの途中など）
-        this.lastNoiseMs = t;
+        events.push({
+          type: 'sequence-cancelled',
+          timeMs: t,
+          reason: quietActivity
+            ? '直前にタイピングなどの鋭い音があったため、1回目として数えませんでした（1秒ほど静かにしてから叩いてください）'
+            : '直前に話し声などの音があったため、1回目として数えませんでした（少し静かにしてから叩いてください）',
+        });
       }
       return;
     }
     if (seq.state === 'one') {
       const gap = t - seq.t1;
-      if (gap < CLAP_CONSTANTS.minIntervalMs) return; // 反響
-      if (gap <= this.opts.maxIntervalMs && Math.abs(level - seq.level1) <= CLAP_CONSTANTS.maxLevelDiffDb) {
-        this.seq = { state: 'two', t2: t };
-      } else {
-        this.cancel(t, gap > this.opts.maxIntervalMs ? '間隔が長すぎる' : '2回の大きさが違いすぎる', events);
+      if (gap < CLAP_CONSTANTS.minIntervalMs) return;
+      if (gap > this.opts.maxIntervalMs) {
+        // 間隔が長すぎた → 今回を新しい 1 回目とする
+        this.seq = { state: 'one', t1: t, level1: level };
+        events.push({ type: 'first-clap', timeMs: t });
+        return;
       }
+      if (Math.abs(level - seq.level1) > CLAP_CONSTANTS.maxLevelDiffDb) {
+        this.cancel(t, `2回の大きさが違いすぎます（差 ${Math.round(Math.abs(level - seq.level1))}dB）。同じ強さで叩いてください`, events);
+        return;
+      }
+      this.seq = { state: 'two', t1: seq.t1, t2: t };
       return;
     }
-    // 3 回目の音 → 連続音とみなして取り消し
-    this.cancel(t, '3回以上続いた（タイピング・連続音など）', events);
+    this.cancel(t, '3回以上続けて鋭い音がありました（タイピング・連続音と判断）', events);
   }
 
-  private onNoise(t: number, reason: string, events: DetectorEvent[]): void {
-    if (this.seq.state !== 'idle') this.cancel(t, `途中で別の音があった：${reason}`, events);
-    else this.lastNoiseMs = t;
+  private onSharpNoise(t: number, reason: string, events: DetectorEvent[]): void {
+    if (this.seq.state !== 'idle') this.cancel(t, `途中で拍手ではない鋭い音がありました：${reason}`, events);
+  }
+
+  private onActivity(t: number, what: string, events: DetectorEvent[]): void {
+    this.lastActivityMs = t;
+    if (this.seq.state !== 'idle') this.cancel(t, `途中で${what}がありました`, events);
   }
 
   private cancel(t: number, reason: string, events: DetectorEvent[]): void {
     this.seq = { state: 'idle' };
-    this.lastNoiseMs = t;
     events.push({ type: 'sequence-cancelled', timeMs: t, reason });
   }
 
   private advanceSequence(t: number, events: DetectorEvent[]): void {
     const seq = this.seq;
-    if (seq.state === 'one' && t - seq.t1 > this.opts.maxIntervalMs && !this.current) {
+    const busy = this.mode === 'candidate';
+    if (seq.state === 'one' && t - seq.t1 > this.opts.maxIntervalMs + 100 && !busy) {
       this.seq = { state: 'idle' };
-      this.lastNoiseMs = seq.t1;
-      events.push({ type: 'sequence-cancelled', timeMs: t, reason: '2回目が来なかった' });
-    } else if (seq.state === 'two' && t - seq.t2 >= CLAP_CONSTANTS.confirmMs && !this.current) {
+      events.push({
+        type: 'sequence-cancelled',
+        timeMs: t,
+        reason: `2回目が ${(this.opts.maxIntervalMs / 1000).toFixed(2)} 秒以内に来ませんでした（間隔の設定を長くするか、早めに叩いてください）`,
+      });
+    } else if (seq.state === 'two' && t - seq.t2 >= CLAP_CONSTANTS.confirmMs && !busy) {
       this.seq = { state: 'idle' };
-      this.lastNoiseMs = t;
-      events.push({ type: 'double-clap', timeMs: t });
+      events.push({ type: 'double-clap', timeMs: t, intervalMs: Math.round(seq.t2 - seq.t1) });
     }
   }
 }
