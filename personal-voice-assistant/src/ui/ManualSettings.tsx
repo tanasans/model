@@ -22,10 +22,6 @@ const MANUAL_FIELDS: Array<{
 export function ManualSettings({ profile, onChange }: { profile: ClapProfile; onChange: (p: ClapProfile) => void }) {
   return (
     <div className="manual">
-      <div className="meta">
-        値を変えるとすぐに反映されます（感度 5 のときの基準。感度スライダーはこの値を全体的に緩める／厳しくします）。
-        テストモードと「直近の大きな音」の ✓／✗ を見ながら調整してください。
-      </div>
       <div className="settings">
         {MANUAL_FIELDS.map((f) => (
           <label key={f.key} title={f.help}>
@@ -39,7 +35,6 @@ export function ManualSettings({ profile, onChange }: { profile: ClapProfile; on
               value={profile[f.key]}
               onChange={(e) => onChange({ ...profile, [f.key]: Number(e.target.value) })}
             />
-            <small className="meta">{f.help}</small>
           </label>
         ))}
       </div>

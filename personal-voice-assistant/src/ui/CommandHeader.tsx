@@ -3,26 +3,26 @@ import type { Phase } from '../useVoiceSession';
 
 export type ServerView = { kind: 'checking' } | { kind: 'down' } | { kind: 'up'; apiKeyConfigured: boolean; model: string; defaultVoice: string };
 
-/** 最小限のヘッダー：左に KAITO、右に時刻と接続状態 */
+/** ヘッダー：左に KAITO ロゴ（Canva で作成）、右に接続状態と時計 */
 export function CommandHeader({ server, phase }: { server: ServerView; phase: Phase }) {
   const now = useClock();
-  const srv = server.kind === 'up' ? { t: 'ONLINE', c: 'ok' } : server.kind === 'down' ? { t: 'OFFLINE', c: 'alert' } : { t: 'CHECK', c: 'idle' };
+  const srv = server.kind === 'up' ? { t: 'ONLINE', c: 'ok' } : server.kind === 'down' ? { t: 'OFFLINE', c: 'alert' } : { t: '…', c: 'idle' };
   const api =
     server.kind === 'up' && !server.apiKeyConfigured
-      ? { t: 'KEY未設定', c: 'alert' }
+      ? { t: 'NO KEY', c: 'alert' }
       : phase === 'connected'
         ? { t: 'LINKED', c: 'live' }
         : phase === 'idle'
           ? { t: 'STANDBY', c: 'idle' }
-          : { t: 'LINKING', c: 'busy' };
+          : { t: 'LINKING', c: 'live' };
   return (
     <header className="ch">
-      <div className="ch-brand">
-        <span className="ch-logo">KAITO</span>
-        <span className="ch-tag">COMMAND TERMINAL</span>
-      </div>
+      <picture className="ch-logo">
+        <source srcSet="/brand/kaito-logo.webp" type="image/webp" />
+        <img src="/brand/kaito-logo.png" alt="KAITO" width={900} height={268} />
+      </picture>
       <div className="ch-right">
-        <span className={`ch-stat is-${srv.c}`} title="ローカルサーバー（このPC）">
+        <span className={`ch-stat is-${srv.c}`} title="ローカルサーバー">
           <i aria-hidden />
           SERVER <b>{srv.t}</b>
         </span>

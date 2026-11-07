@@ -32,10 +32,10 @@ export function InfoPanel({ wake, clap, lines, connected, errors, notice }: Info
     <aside className="k-info" aria-label="情報">
       <section className="k-card">
         <h2 className="k-card-title">
-          <span>直近の判定</span>
+          <span>認識結果</span>
           <span className="k-card-en">LAST DETECTION</span>
         </h2>
-        {latest ? <LatestDecision item={latest} /> : <p className="k-empty">まだ判定はありません。待機を ON にすると、呼びかけや拍手の判定結果がここに表示されます。</p>}
+        {latest ? <LatestDecision item={latest} /> : <p className="k-empty">判定なし</p>}
       </section>
 
       <section className="k-card k-card-grow">
@@ -44,7 +44,7 @@ export function InfoPanel({ wake, clap, lines, connected, errors, notice }: Info
           <span className="k-card-en">TRANSCRIPT</span>
         </h2>
         {lines.length === 0 ? (
-          <p className="k-empty">{connected ? 'まだ発話はありません。' : '会話を開始すると、文字起こし（APIから届いた分だけ）が表示されます。'}</p>
+          <p className="k-empty">{connected ? '発話なし' : '会話なし'}</p>
         ) : (
           <ul className="k-transcript">
             {lines.map((l) => (
@@ -65,7 +65,7 @@ export function InfoPanel({ wake, clap, lines, connected, errors, notice }: Info
           <span className="k-card-en">ALERTS</span>
         </h2>
         {errors.length === 0 ? (
-          <p className="k-empty">エラーはありません。</p>
+          <p className="k-empty">なし</p>
         ) : (
           <ul className="k-errors" role="alert">
             {errors.map((e) => (
@@ -95,7 +95,6 @@ export function InfoPanel({ wake, clap, lines, connected, errors, notice }: Info
           </ul>
         </details>
       )}
-      <p className="k-privacy">音声は保存・送信しません（待機中の判定はこの PC のブラウザ内だけ）。会話終了・待機 OFF・タブを閉じるとマイクを解放します。</p>
     </aside>
   );
 }
@@ -195,7 +194,7 @@ function MicCard() {
         <span className="k-card-en">DEVICE</span>
       </h2>
       {!p ? (
-        <p className="k-empty">待機用マイクは使用していません（音声待機・拍手待機・キャリブレーション中に表示されます）。</p>
+        <p className="k-empty">未使用</p>
       ) : (
         <>
           <p className="k-mic-name">
@@ -209,10 +208,7 @@ function MicCard() {
               </span>
             ))}
           </div>
-          <p className="k-meta">
-            待機用マイクはすべて OFF を要求しています（拍手の波形を保つため）。
-            {items.some(([, v]) => v === true) && ' ON のものがあります：Windows の「マイクのプロパティ」で音声の強化等をオフにしてください。'}
-          </p>
+          {items.some(([, v]) => v === true) && <p className="k-meta">音声加工が ON：Windows のマイク設定で強化機能をオフに</p>}
         </>
       )}
     </section>

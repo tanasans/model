@@ -9,9 +9,11 @@ import { CommandBar } from './ui/CommandBar';
 import { CommandCore } from './ui/CommandCore';
 import { CommandHeader, type ServerView } from './ui/CommandHeader';
 import { deriveCoreView } from './ui/coreState';
+import { DetailSettings } from './ui/DetailSettings';
+import { DisplayHost, type DisplayView } from './ui/display/DisplayHost';
 import { InfoPanel } from './ui/InfoPanel';
-import { SettingsTab } from './ui/SettingsTab';
-import { SideDrawer } from './ui/SideDrawer';
+import { SideDrawer, type DrawerTab } from './ui/SideDrawer';
+import { VoicePanel } from './ui/VoicePanel';
 import { TacticalBackdrop } from './ui/TacticalBackdrop';
 import { useVoiceSession } from './useVoiceSession';
 import { useVoiceSettings } from './voice/useVoiceSettings';
@@ -36,7 +38,9 @@ export function App() {
   const voiceSettings = useVoiceSettings();
   const [server, setServer] = useState<ServerView>({ kind: 'checking' });
   const [testMode, setTestMode] = useState(false);
-  const [drawer, setDrawer] = useState<'log' | 'settings' | null>(null);
+  const [drawer, setDrawer] = useState<DrawerTab | null>(null);
+  // 中央の表示内容（将来、音声の指示で天気・出馬表・チャートなどに切り替える）
+  const [display, setDisplay] = useState<DisplayView>({ kind: 'core' });
   const [calibOpen, setCalibOpen] = useState(false);
   const [lowMotion, setLowMotion] = useState(loadLowMotion);
   const [burstKey, setBurstKey] = useState(0);
@@ -111,8 +115,7 @@ export function App() {
     server: server.kind,
     apiKeyConfigured: server.kind === 'up' ? server.apiKeyConfigured : null,
     voiceError: voice.error,
-    testMode,
-    wake: { on: wake.on, status: wake.status, error: wake.wake.error, mode: wake.settings.mode },
+    wake: { on: wake.on, status: wake.status, error: wake.wake.error },
     clap: { on: clap.standbyOn, status: clap.status, error: clap.standby.error },
   });
 
@@ -145,13 +148,12 @@ export function App() {
       <TacticalBackdrop lowMotion={lowMotion} />
       <CommandHeader server={server} phase={phase} />
       <main className="stage" aria-live="polite">
-        <CommandCore view={view} readLevel={readCoreLevel} burstKey={burstKey} pulseKey={pulseKey} detail={remaining} />
-        <p className="stage-hint">{view.hint}</p>
-        {testMode && (
-          <p className="stage-test">
-            TEST　呼びかけ <b>{wake.testCount}</b>　拍手 <b>{clap.testCount}</b>
-          </p>
-        )}
+        <DisplayHost
+          view={display}
+          onClose={() => setDisplay({ kind: 'core' })}
+          core={<CommandCore view={view} readLevel={readCoreLevel} burstKey={burstKey} pulseKey={pulseKey} detail={remaining} />}
+        />
+        {view.notice && <p className="stage-notice">{view.notice}</p>}
       </main>
       <CommandBar
         wakeOn={wake.on}
@@ -160,23 +162,21 @@ export function App() {
         setClapOn={clap.setStandbyOn}
         phase={phase}
         triggering={triggering}
-        testMode={testMode}
+        test={testMode ? { wake: wake.testCount, clap: clap.testCount } : null}
         onStart={onManualStart}
         onStop={() => void stop()}
-        onOpen={(t) => setDrawer((d) => (d === t ? null : t))}
+        onSettings={() => setDrawer((d) => (d ? null : errors.length ? 'diag' : 'voice'))}
+        settingsOpen={drawer !== null}
         alert={errors.length > 0}
-        drawer={drawer}
       />
-      <SideDrawer tab={drawer} onTab={setDrawer} onClose={() => setDrawer(null)}>
-        {drawer === 'log' ? (
-          <InfoPanel wake={wake} clap={clap} lines={voice.lines} connected={phase === 'connected'} errors={errors} notice={voice.notice} />
-        ) : (
-          <SettingsTab
+      <SideDrawer tab={drawer} onTab={setDrawer} onClose={() => setDrawer(null)} alert={errors.length > 0}>
+        {drawer === 'voice' && (
+          <VoicePanel vs={voiceSettings} defaultVoice={server.kind === 'up' ? server.defaultVoice : null} apiKeyConfigured={apiKeyConfigured} busy={phase !== 'idle' || triggering} />
+        )}
+        {drawer === 'detail' && (
+          <DetailSettings
             wake={wake}
             clap={clap}
-            voice={voiceSettings}
-            defaultVoice={server.kind === 'up' ? server.defaultVoice : null}
-            apiKeyConfigured={apiKeyConfigured}
             busy={phase !== 'idle' || triggering}
             testMode={testMode}
             setTestMode={setTestMode}
@@ -189,8 +189,9 @@ export function App() {
             readMicDb={readMicDb}
           />
         )}
+        {drawer === 'diag' && <InfoPanel wake={wake} clap={clap} lines={voice.lines} connected={phase === 'connected'} errors={errors} notice={voice.notice} />}
       </SideDrawer>
-      {calibOpen && <CalibrationModal clap={clap} onClose={() => setCalibOpen(false)} onManual={() => setDrawer('settings')} />}
+      {calibOpen && <CalibrationModal clap={clap} onClose={() => setCalibOpen(false)} onManual={() => setDrawer('detail')} />}
     </div>
   );
 }

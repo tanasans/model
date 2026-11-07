@@ -8,52 +8,48 @@ const base: CoreInputs = {
   server: 'up',
   apiKeyConfigured: true,
   voiceError: null,
-  testMode: false,
-  wake: { on: false, status: 'off', error: null, mode: 'both' },
+  wake: { on: false, status: 'off', error: null },
   clap: { on: false, status: 'off', error: null },
 };
 const v = (p: Partial<CoreInputs>) => deriveCoreView({ ...base, ...p });
+const all = (p: Partial<CoreInputs>) => {
+  const r = v(p);
+  return `${r.sub} ${r.notice ?? ''}`;
+};
 
-test('何も ON でなければ STANDBY（聞いていないのに LISTENING と表示しない）', () => {
+test('起動方法の説明文は一切出さない（どの状態でも）', () => {
+  const cases: Partial<CoreInputs>[] = [
+    {},
+    { wake: { on: true, status: 'listening', error: null } },
+    { clap: { on: true, status: 'listening', error: null } },
+    { wake: { on: true, status: 'listening', error: null }, clap: { on: true, status: 'listening', error: null } },
+    { phase: 'connected' },
+  ];
+  for (const c of cases) assert.doesNotMatch(all(c), /起動します|ねえ、カイト|拍手2回|テストモード|押してください|ON にすると/);
+});
+
+test('実際に聞いている間だけ LISTENING。拍手 1 回目は短く通知', () => {
   assert.equal(v({}).state, 'STANDBY');
-  // ON にしただけでまだマイク準備中なら LISTENING にしない
-  assert.equal(v({ wake: { ...base.wake, on: true, status: 'loading' } }).state, 'STANDBY');
-  assert.match(v({ wake: { ...base.wake, on: true, status: 'loading' } }).sub, /読込中/);
+  assert.equal(v({ wake: { on: true, status: 'loading', error: null } }).state, 'STANDBY');
+  assert.equal(v({ wake: { on: true, status: 'listening', error: null } }).state, 'LISTENING');
+  assert.equal(v({ wake: { on: true, status: 'listening', error: null } }).sub, '');
+  assert.equal(v({ clap: { on: true, status: 'first-clap', error: null } }).sub, '拍手 1');
 });
 
-test('実際に聞いている間だけ LISTENING。説明文は有効な起動方法だけを書く', () => {
-  const both = v({ wake: { ...base.wake, on: true, status: 'listening', mode: 'nee' }, clap: { on: true, status: 'listening', error: null } });
-  assert.equal(both.state, 'LISTENING');
-  assert.equal(both.hint, '『ねえ、カイト』または拍手2回で起動します');
-  const clapOnly = v({ clap: { on: true, status: 'first-clap', error: null } });
-  assert.equal(clapOnly.hint, '拍手2回で起動します');
-  assert.equal(clapOnly.sub, '1回目の拍手を検知');
-  assert.match(v({ testMode: true, clap: { on: true, status: 'listening', error: null } }).hint, /テストモード/);
-});
-
-test('会話中・起動中は ACTIVE', () => {
+test('会話中・起動中は ACTIVE、接続処理中だけ connecting', () => {
   assert.equal(v({ phase: 'connected' }).state, 'ACTIVE');
-  assert.equal(v({ triggering: true }).sub, '起動中');
-  assert.equal(v({ phase: 'connecting' }).sub, 'OpenAI に接続中');
-});
-
-test('エラーは ERROR として理由を表示（サーバー停止・モデル未設置・会話エラー）', () => {
-  assert.equal(v({ server: 'down' }).state, 'ERROR');
-  const nm = v({ wake: { ...base.wake, on: true, status: 'not-installed' } });
-  assert.equal(nm.state, 'ERROR');
-  assert.match(nm.hint, /setup:wake/);
-  assert.equal(v({ voiceError: 'APIキーがありません' }).hint, 'APIキーがありません');
-  // 音声待機が OFF ならモデル未設置はエラー扱いしない
-  assert.equal(v({ wake: { ...base.wake, on: false, status: 'not-installed' } }).state, 'STANDBY');
-});
-
-test('会話中は他のエラーより ACTIVE を優先', () => {
+  assert.equal(v({ phase: 'connected' }).connecting, false);
+  assert.equal(v({ phase: 'connecting' }).connecting, true);
+  assert.equal(v({ triggering: true }).sub, '起動');
   assert.equal(v({ phase: 'connected', voiceError: 'x' }).state, 'ACTIVE');
 });
 
-test('接続処理中だけ connecting（外周の光）を出す。会話中・待機中は出さない', () => {
-  assert.equal(v({ phase: 'connecting' }).connecting, true);
-  assert.equal(v({ triggering: true }).connecting, true);
-  assert.equal(v({ phase: 'connected' }).connecting, false);
-  assert.equal(v({ clap: { on: true, status: 'listening', error: null } }).connecting, false);
+test('エラーは ERROR と短い通知（長文は最初の文だけ）', () => {
+  assert.equal(v({ server: 'down' }).state, 'ERROR');
+  const nm = v({ wake: { on: true, status: 'not-installed', error: null } });
+  assert.equal(nm.state, 'ERROR');
+  assert.match(nm.notice!, /setup:wake/);
+  const long = v({ voiceError: 'サーバーに OPENAI_API_KEY が設定されていません。.env を設定してサーバーを再起動してください。' });
+  assert.equal(long.notice, 'サーバーに OPENAI_API_KEY が設定されていません');
+  assert.equal(v({ wake: { on: false, status: 'not-installed', error: null } }).state, 'STANDBY');
 });
