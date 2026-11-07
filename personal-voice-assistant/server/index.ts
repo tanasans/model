@@ -11,12 +11,15 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
+import { previewVoice, PreviewError } from './voicePreview.js';
 import OpenAI from 'openai';
 import {
   ASSISTANT_INSTRUCTIONS,
   TRANSCRIPTION_MODEL,
   type ApiErrorBody,
   type HealthInfo,
+  isVoiceId,
+  PREVIEW_SAMPLES,
   type ReasoningEffort,
   type SessionGrant,
   type TurnDetectionSetting,
@@ -103,11 +106,64 @@ app.get('/api/health', (_req, res) => {
     apiKeyConfigured: Boolean(openai),
     model: MODEL,
     maxSessionSeconds: MAX_SESSION_SECONDS,
+    defaultVoice: VOICE,
   };
   res.json(body);
 });
 
-app.post('/api/session', requireLocalOrigin, async (req, res) => {
+// ---------- 声の試聴（会話と同じ Realtime API を使うため、料金がかかる） ----------
+const MIN_PREVIEW_INTERVAL_MS = 4_000;
+let previewBusy = false;
+let lastPreviewAt = 0;
+
+app.post('/api/voice-preview', requireLocalOrigin, express.json({ limit: '1kb' }), async (req, res) => {
+  const voice: unknown = req.body?.voice;
+  const sample = PREVIEW_SAMPLES.find((x) => x.id === req.body?.sampleId);
+  if (!isVoiceId(voice) || !sample) {
+    sendError(res, 400, 'BAD_REQUEST', '声または試聴文の指定が不正です。');
+    return;
+  }
+  if (!openai) {
+    sendError(res, 503, 'NO_API_KEY', 'サーバーに OPENAI_API_KEY が設定されていないため試聴できません。');
+    return;
+  }
+  // 会話中・他の試聴中は行わない（同時接続の抑制）
+  if (activeLease || previewBusy) {
+    sendError(res, 409, 'SESSION_BUSY', '会話中または別の試聴中です。終わってからお試しください。');
+    return;
+  }
+  if (Date.now() - lastPreviewAt < MIN_PREVIEW_INTERVAL_MS) {
+    sendError(res, 429, 'RATE_LIMITED', '続けて試聴するには数秒お待ちください。');
+    return;
+  }
+  previewBusy = true;
+  lastPreviewAt = Date.now();
+  try {
+    const r = await previewVoice({
+      apiKey: API_KEY,
+      model: MODEL,
+      voice,
+      text: sample.text,
+      instructions: ASSISTANT_INSTRUCTIONS,
+      url: process.env.REALTIME_WS_URL || undefined,
+      reasoningEffort: reasoningAccepted ? REASONING_EFFORT : null,
+    });
+    log(`voice preview ok voice=${voice} firstAudioMs=${r.firstAudioMs} totalMs=${r.totalMs}`);
+    res.setHeader('Content-Type', 'audio/wav');
+    res.setHeader('X-First-Audio-Ms', String(r.firstAudioMs));
+    res.setHeader('X-Total-Ms', String(r.totalMs));
+    res.setHeader('X-Audio-Seconds', r.audioSeconds.toFixed(2));
+    res.send(r.wav);
+  } catch (err) {
+    const code = err instanceof PreviewError ? err.code : 'UPSTREAM_ERROR';
+    log(`voice preview failed voice=${voice} code=${code}`);
+    sendError(res, code === 'TIMEOUT' ? 504 : 502, code, err instanceof PreviewError ? err.message : '試聴に失敗しました。');
+  } finally {
+    previewBusy = false;
+  }
+});
+
+app.post('/api/session', requireLocalOrigin, express.json({ limit: '1kb' }), async (req, res) => {
   if (!req.is('application/json')) {
     sendError(res, 400, 'BAD_REQUEST', 'Content-Type が不正です。');
     return;
@@ -131,6 +187,9 @@ app.post('/api/session', requireLocalOrigin, async (req, res) => {
     return;
   }
   lastCreateAt = now;
+  // 声の選択（許可リストにあるものだけ。無ければ .env の既定の声）
+  const requestedVoice: unknown = req.body?.voice;
+  const voice = isVoiceId(requestedVoice) ? requestedVoice : VOICE;
 
   // 発行処理中に別リクエストが来ても 1 件に抑えるため、先にリースを確保する
   const id = randomUUID();
@@ -144,13 +203,13 @@ app.post('/api/session', requireLocalOrigin, async (req, res) => {
   try {
     let secret: Awaited<ReturnType<typeof issueClientSecret>>;
     try {
-      secret = await issueClientSecret(openai, reasoningAccepted ? REASONING_EFFORT : null);
+      secret = await issueClientSecret(openai, reasoningAccepted ? REASONING_EFFORT : null, voice);
     } catch (err) {
       // reasoning 設定が原因の 400 なら、設定なしで 1 回だけ再試行（従来の正常動作を壊さないため）
       if (reasoningAccepted && err instanceof OpenAI.BadRequestError) {
         reasoningAccepted = false;
         log('reasoning setting rejected; retrying without it');
-        secret = await issueClientSecret(openai, null);
+        secret = await issueClientSecret(openai, null, voice);
       } else {
         throw err;
       }
@@ -160,7 +219,7 @@ app.post('/api/session', requireLocalOrigin, async (req, res) => {
       clientSecret: secret.value,
       clientSecretExpiresAt: secret.expires_at,
       model: MODEL,
-      voice: VOICE,
+      voice,
       maxSessionSeconds: MAX_SESSION_SECONDS,
       turnDetection: TURN_DETECTION,
       reasoningEffort: reasoningAccepted ? REASONING_EFFORT : null,
@@ -238,7 +297,7 @@ process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
 // ---------- OpenAI 呼び出し ----------
-function issueClientSecret(client: OpenAI, effort: ReasoningEffort | null) {
+function issueClientSecret(client: OpenAI, effort: ReasoningEffort | null, voice: string) {
   const td = TURN_DETECTION;
   return client.realtime.clientSecrets.create({
     expires_after: { anchor: 'created_at', seconds: CLIENT_SECRET_TTL_SECONDS },
@@ -261,7 +320,7 @@ function issueClientSecret(client: OpenAI, effort: ReasoningEffort | null) {
                   threshold: td.threshold,
                 },
         },
-        output: { voice: VOICE },
+        output: { voice },
       },
     },
   });

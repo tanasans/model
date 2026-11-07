@@ -26,6 +26,8 @@ export interface CoreView {
   sub: string;
   /** コアの下の説明文 */
   hint: string;
+  /** 接続処理中（外周を小さな光が移動する演出） */
+  connecting: boolean;
 }
 
 const PHASE_SUB: Record<Phase, string> = {
@@ -50,6 +52,7 @@ export function deriveCoreView(i: CoreInputs): CoreView {
       state: 'ACTIVE',
       sub: i.triggering && i.phase === 'idle' ? '起動中' : PHASE_SUB[i.phase],
       hint: i.phase === 'connected' ? '会話中です。話しかけてください。終わったら「会話終了」を押してください。' : '会話を開始しています…',
+      connecting: i.phase !== 'connected' && i.phase !== 'stopping',
     };
   }
 
@@ -72,7 +75,7 @@ export function deriveCoreView(i: CoreInputs): CoreView {
       sub = '拍手待機エラー';
       hint = i.clap.error ?? '拍手待機を開始できませんでした。';
     }
-    return { state: 'ERROR', sub, hint };
+    return { state: 'ERROR', sub, hint, connecting: false };
   }
 
   // 3. 待機（実際にマイクで聞いている間だけ LISTENING）
@@ -84,7 +87,7 @@ export function deriveCoreView(i: CoreInputs): CoreView {
     const hint =
       `${ways.join('または')}で起動します` +
       (i.testMode ? '（テストモード：会話は始めず、検知回数だけ数えます）' : '');
-    return { state: 'LISTENING', sub, hint };
+    return { state: 'LISTENING', sub, hint, connecting: false };
   }
 
   // 4. 何も聞いていない
@@ -97,5 +100,6 @@ export function deriveCoreView(i: CoreInputs): CoreView {
       : i.apiKeyConfigured === false
         ? 'APIキーが未設定のため会話は開始できません（.env を設定してサーバーを再起動してください）。'
         : '下の「音声待機」「拍手待機」を ON にすると、呼びかけや拍手で起動します。「会話開始」でもすぐ始められます。',
+    connecting: false,
   };
 }

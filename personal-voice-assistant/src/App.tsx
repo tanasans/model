@@ -4,42 +4,67 @@ import { getMicHubInfo } from './audio/micHub';
 import { playChime } from './clap/chime';
 import { useClapController } from './clap/useClapController';
 import { createTriggerGate } from './triggerGate';
-import { AiCore } from './ui/AiCore';
 import { CalibrationModal } from './ui/CalibrationModal';
-import { ControlDock } from './ui/ControlDock';
+import { CommandBar } from './ui/CommandBar';
+import { CommandCore } from './ui/CommandCore';
+import { CommandHeader, type ServerView } from './ui/CommandHeader';
 import { deriveCoreView } from './ui/coreState';
-import { Header, type ServerView } from './ui/Header';
 import { InfoPanel } from './ui/InfoPanel';
-import { SettingsModal } from './ui/SettingsModal';
+import { SettingsTab } from './ui/SettingsTab';
+import { SideDrawer } from './ui/SideDrawer';
+import { TacticalBackdrop } from './ui/TacticalBackdrop';
 import { useVoiceSession } from './useVoiceSession';
+import { useVoiceSettings } from './voice/useVoiceSettings';
 import { useWakeController } from './wake/useWakeController';
 
+const UI_KEY = 'pva.ui.v1';
+function loadLowMotion(): boolean {
+  try {
+    return (JSON.parse(localStorage.getItem(UI_KEY) ?? '{}') as { lowMotion?: boolean }).lowMotion === true;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * KAITO 待機画面（RED COMMAND × LUX SECRETARY）。
- * 検出・会話のロジックは各 controller / hook にあり、ここでは組み立てと表示だけを行う。
+ * KAITO 第6版：MILITARY SPACE COMMAND。
+ * 検出・会話・声のロジックは各 controller / hook にあり、ここは組み立てと表示だけ。
  */
 export function App() {
   const voice = useVoiceSession();
   const { phase, start, stop } = voice;
+  const voiceSettings = useVoiceSettings();
   const [server, setServer] = useState<ServerView>({ kind: 'checking' });
   const [testMode, setTestMode] = useState(false);
-  const [modal, setModal] = useState<'none' | 'calibration' | 'settings'>('none');
+  const [drawer, setDrawer] = useState<'log' | 'settings' | null>(null);
+  const [calibOpen, setCalibOpen] = useState(false);
+  const [lowMotion, setLowMotion] = useState(loadLowMotion);
   const [burstKey, setBurstKey] = useState(0);
+  const [pulseKey, setPulseKey] = useState(0);
 
-  // 拍手・音声呼びかけ共通の起動処理。同時に検知しても接続は 1 回だけ（二重接続防止）
+  useEffect(() => {
+    try {
+      localStorage.setItem(UI_KEY, JSON.stringify({ lowMotion }));
+    } catch {
+      /* 保存できなくても動作には影響しない */
+    }
+  }, [lowMotion]);
+
+  // 拍手・音声呼びかけ・ボタン共通の起動処理。同時に検知しても接続は 1 回だけ（二重接続防止）
   const [triggering, setTriggering] = useState(false);
   const gateRef = useRef(createTriggerGate());
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
+  const chosenVoiceRef = useRef(voiceSettings.chosen);
+  chosenVoiceRef.current = voiceSettings.chosen;
   const triggerStart = useCallback(
     async (source: 'clap' | 'wake') => {
       if (phaseRef.current !== 'idle') return;
       await gateRef.current.run(async () => {
         setTriggering(true); // ここで拍手・音声の待機を止め、マイクを解放する
-        setBurstKey((k) => k + 1);
         try {
           await playChime();
-          await start({ trigger: source });
+          await start({ trigger: source, voice: chosenVoiceRef.current });
         } finally {
           setTriggering(false);
         }
@@ -49,26 +74,31 @@ export function App() {
   );
   const onManualStart = useCallback(() => {
     setBurstKey((k) => k + 1);
-    void start();
+    void gateRef.current.run(() => start({ voice: chosenVoiceRef.current }));
   }, [start]);
 
   const standbyPaused = phase !== 'idle' || triggering;
   const wake = useWakeController({ paused: standbyPaused, testMode, onWakeStart: () => triggerStart('wake') });
   const clap = useClapController({ paused: standbyPaused, testMode, onClapStart: () => triggerStart('clap') });
 
-  // テストモードの検知も、起動演出（リングが広がる）を 1 回出す
-  const testTotal = wake.testCount + clap.testCount;
-  const prevTest = useRef(testTotal);
+  // コアの演出は実際の検出イベントだけで動かす
+  const lastWakeId = wake.lastDecision?.decision.accepted ? wake.lastDecision.id : null;
   useEffect(() => {
-    if (testTotal > prevTest.current) setBurstKey((k) => k + 1);
-    prevTest.current = testTotal;
-  }, [testTotal]);
+    if (lastWakeId !== null) setBurstKey((k) => k + 1); // 呼びかけ認識：アンバーのリングが広がる
+  }, [lastWakeId]);
+  const clapLogTop = clap.standby.log[0];
+  const clapEventId = clapLogTop && clapLogTop.kind === 'note' ? `${clapLogTop.id}:${clapLogTop.text}` : null;
+  useEffect(() => {
+    if (!clapEventId) return;
+    if (clapEventId.includes('1回目の拍手')) setPulseKey((k) => k + 1); // 拍手 1 回目：外周が反応
+    else if (clapEventId.includes('拍手2回を検知')) setBurstKey((k) => k + 1);
+  }, [clapEventId]);
 
   useEffect(() => {
     let alive = true;
     fetch('/api/health')
       .then((r) => (r.ok ? (r.json() as Promise<HealthInfo>) : Promise.reject(new Error('bad status'))))
-      .then((info) => alive && setServer({ kind: 'up', apiKeyConfigured: info.apiKeyConfigured, model: info.model }))
+      .then((info) => alive && setServer({ kind: 'up', apiKeyConfigured: info.apiKeyConfigured, model: info.model, defaultVoice: info.defaultVoice }))
       .catch(() => alive && setServer({ kind: 'down' }));
     return () => {
       alive = false;
@@ -86,7 +116,7 @@ export function App() {
     clap: { on: clap.standbyOn, status: clap.status, error: clap.standby.error },
   });
 
-  // レベル表示：会話中は会話用マイク、待機中は待機用マイクの実測値。どちらも使っていなければ null
+  // レベル：会話中は会話用マイク、待機中は待機用マイクの実測値。使っていなければ null
   const readMicDb = useCallback((): number | null => {
     const lv = voice.getInputLevel();
     if (lv !== null) return lv * 50 - 60;
@@ -104,48 +134,63 @@ export function App() {
     wake.on && wake.status === 'not-installed' ? '音声認識モデルが未設置です。PowerShell で npm run setup:wake を実行してください。' : null,
     wake.on && wake.wake.error ? `音声待機：${wake.wake.error}` : null,
     clap.standbyOn && clap.standby.error ? `拍手待機：${clap.standby.error}` : null,
+    voiceSettings.previewError ? `試聴：${voiceSettings.previewError}` : null,
   ].filter((e): e is string => Boolean(e));
 
-  const remaining = phase === 'connected' && voice.remaining !== null ? `残り ${formatSec(voice.remaining)}` : null;
+  const remaining = phase === 'connected' && voice.remaining !== null ? `${Math.floor(voice.remaining / 60)}:${String(voice.remaining % 60).padStart(2, '0')}` : null;
+  const apiKeyConfigured = server.kind === 'up' && server.apiKeyConfigured;
 
   return (
-    <div className={`kaito state-${view.state.toLowerCase()}`}>
-      <Header server={server} phase={phase} />
-      <main className="k-main">
-        <section className="k-stage" aria-live="polite">
-          <AiCore state={view.state} sub={view.sub} readLevel={readCoreLevel} burstKey={burstKey} detail={remaining} />
-          <p className="k-hint">{view.hint}</p>
-          {testMode && (
-            <p className="k-testline">
-              TEST MODE　呼びかけ <strong>{wake.testCount}</strong> 回 ／ 拍手 <strong>{clap.testCount}</strong> 回（会話は開始しません・料金なし）
-            </p>
-          )}
-        </section>
-        <InfoPanel wake={wake} clap={clap} lines={voice.lines} connected={phase === 'connected'} errors={errors} notice={voice.notice} />
+    <div className={`k6 state-${view.state.toLowerCase()} ${drawer ? 'drawer-open' : ''}`}>
+      <TacticalBackdrop lowMotion={lowMotion} />
+      <CommandHeader server={server} phase={phase} />
+      <main className="stage" aria-live="polite">
+        <CommandCore view={view} readLevel={readCoreLevel} burstKey={burstKey} pulseKey={pulseKey} detail={remaining} />
+        <p className="stage-hint">{view.hint}</p>
+        {testMode && (
+          <p className="stage-test">
+            TEST　呼びかけ <b>{wake.testCount}</b>　拍手 <b>{clap.testCount}</b>
+          </p>
+        )}
       </main>
-      <ControlDock
-        wake={wake}
-        clap={clap}
-        testMode={testMode}
-        setTestMode={setTestMode}
+      <CommandBar
+        wakeOn={wake.on}
+        setWakeOn={wake.setOn}
+        clapOn={clap.standbyOn}
+        setClapOn={clap.setStandbyOn}
         phase={phase}
         triggering={triggering}
+        testMode={testMode}
         onStart={onManualStart}
         onStop={() => void stop()}
-        onCalibrate={() => {
-          setModal('calibration');
-          void clap.calib.start();
-        }}
-        onSettings={() => setModal('settings')}
-        readMicDb={readMicDb}
+        onOpen={(t) => setDrawer((d) => (d === t ? null : t))}
+        alert={errors.length > 0}
+        drawer={drawer}
       />
-      {modal === 'calibration' && <CalibrationModal clap={clap} onClose={() => setModal('none')} onManual={() => setModal('settings')} />}
-      {modal === 'settings' && <SettingsModal wake={wake} clap={clap} onClose={() => setModal('none')} />}
+      <SideDrawer tab={drawer} onTab={setDrawer} onClose={() => setDrawer(null)}>
+        {drawer === 'log' ? (
+          <InfoPanel wake={wake} clap={clap} lines={voice.lines} connected={phase === 'connected'} errors={errors} notice={voice.notice} />
+        ) : (
+          <SettingsTab
+            wake={wake}
+            clap={clap}
+            voice={voiceSettings}
+            defaultVoice={server.kind === 'up' ? server.defaultVoice : null}
+            apiKeyConfigured={apiKeyConfigured}
+            busy={phase !== 'idle' || triggering}
+            testMode={testMode}
+            setTestMode={setTestMode}
+            lowMotion={lowMotion}
+            setLowMotion={setLowMotion}
+            onCalibrate={() => {
+              setCalibOpen(true);
+              void clap.calib.start();
+            }}
+            readMicDb={readMicDb}
+          />
+        )}
+      </SideDrawer>
+      {calibOpen && <CalibrationModal clap={clap} onClose={() => setCalibOpen(false)} onManual={() => setDrawer('settings')} />}
     </div>
   );
-}
-
-function formatSec(s: number): string {
-  const m = Math.floor(s / 60);
-  return `${m}:${String(s % 60).padStart(2, '0')}`;
 }

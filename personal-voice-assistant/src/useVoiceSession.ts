@@ -44,6 +44,8 @@ interface Active {
 export interface StartOptions {
   /** 'clap' の場合、発話が無ければ自動で切断する（誤起動時の課金を抑える） */
   trigger?: 'manual' | 'clap' | 'wake';
+  /** 使う声（未指定ならサーバーの既定）。次の新しい会話から適用される */
+  voice?: string | null;
 }
 
 /** 拍手で起動したのに話しかけられなかった場合、この秒数で自動終了する */
@@ -114,7 +116,7 @@ export function useVoiceSession() {
 
       // 2) サーバーから短命 client secret を取得
       setPhase('fetching-token');
-      grant = await fetchGrant();
+      grant = await fetchGrant(options.voice ?? null);
       if (cancelled()) throw new CancelledError();
 
       // 3) WebRTC で Realtime API に接続
@@ -292,13 +294,13 @@ function stopStream(stream: MediaStream): void {
   for (const track of stream.getTracks()) track.stop();
 }
 
-async function fetchGrant(): Promise<SessionGrant> {
+async function fetchGrant(voice: string | null): Promise<SessionGrant> {
   let res: Response;
   try {
     res = await fetch('/api/session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: '{}',
+      body: JSON.stringify(voice ? { voice } : {}),
     });
   } catch {
     throw new UserFacingError('ローカルサーバーに接続できません。サーバーが起動しているか確認してください。');

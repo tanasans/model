@@ -50,3 +50,10 @@ test('エラーは ERROR として理由を表示（サーバー停止・モデ�
 test('会話中は他のエラーより ACTIVE を優先', () => {
   assert.equal(v({ phase: 'connected', voiceError: 'x' }).state, 'ACTIVE');
 });
+
+test('接続処理中だけ connecting（外周の光）を出す。会話中・待機中は出さない', () => {
+  assert.equal(v({ phase: 'connecting' }).connecting, true);
+  assert.equal(v({ triggering: true }).connecting, true);
+  assert.equal(v({ phase: 'connected' }).connecting, false);
+  assert.equal(v({ clap: { on: true, status: 'listening', error: null } }).connecting, false);
+});

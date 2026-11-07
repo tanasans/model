@@ -25,6 +25,7 @@
     "src/wake/levelTracker.ts",
     "src/wake/dsp.ts",
     "src/triggerGate.ts",
-    "src/ui/coreState.ts"
+    "src/ui/coreState.ts",
+    "server/voicePreview.ts"
   ]
 }

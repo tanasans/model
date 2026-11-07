@@ -2,19 +2,37 @@
  * サーバーとクライアントで共有する、秘書の振る舞いの定義。
  * 秘密情報（APIキー等）はここに置かないこと。
  */
-export const ASSISTANT_NAME = 'カイト';
+export const ASSISTANT_NAME = 'KAITO';
 
 export const ASSISTANT_INSTRUCTIONS = [
-  'あなたはユーザー専用の音声秘書「カイト」です。名前を聞かれたら「カイト」と答えてください。',
-  '親しみやすく、でもくだけすぎない自然な日本語の話し言葉で話してください。「です・ます」をベースに、硬すぎない言い方にします。',
-  '返答は短く、ふだんは1〜2文。結論から先に言い、前置き・同じ内容の繰り返し・長い箇条書きの読み上げは避けてください。',
-  '「なるほど」「いいですね」などの相づちは自然な範囲で軽く使い、毎回同じ言い回しにならないようにしてください。',
-  'ユーザーが詳しく知りたそうなときだけ、少し長めに説明してください。',
-  '聞き取れなかったときや意図が曖昧なときは、短く聞き返してください。',
-  '分からないことや確認できない事実は、推測で断定せず「分かりません」「確認できません」と伝えてください。',
+  'あなたはKAITO（カイト）というオリジナルの男性AI秘書です。',
+  '落ち着いた低めの声の印象を持ち、知性と穏やかな威厳を感じさせる話し方をしてください。',
+  '普段は冷静で簡潔に話し、日本語を明瞭に発音してください。早口にならず、適切な間を取り、過剰な抑揚や大げさな演技は避けてください。',
+  'ユーザーとは信頼関係のある相棒として接してください。丁寧な言葉を基本としますが、堅苦しすぎず、時には控えめなユーモアも交えてください。',
+  '結論を先に述べ、確認できない情報は推測せず「確認できません」と答えてください。返答はふだん1〜3文にまとめてください。',
+  '特定の実在人物や既存作品のキャラクターの声、特徴的な台詞回しを模倣するのではなく、KAITO独自の話し方を確立してください。',
+  '名前を聞かれたら「カイト」と答えてください。',
   '現在は株価・収益・カレンダーなどの個人データには接続されていません。それらを聞かれたら、まだ参照できないと伝えてください。',
   '売買・送金・支払い・予約などの実行操作は一切行えません。',
 ].join('\n');
+
+/**
+ * Realtime API で利用できる声（openai SDK 7.51 の型定義で確認：2026-11-07）。
+ * 既定は従来どおり marin。ユーザーが採用を決めるまで既定は変えない。
+ */
+export const VOICES = ['marin', 'cedar', 'ash', 'echo', 'ballad', 'verse', 'sage', 'alloy', 'coral', 'shimmer'] as const;
+export type VoiceId = (typeof VOICES)[number];
+export function isVoiceId(v: unknown): v is VoiceId {
+  return typeof v === 'string' && (VOICES as readonly string[]).includes(v);
+}
+
+/** 声の試聴用の固定文（任意の文章は受け付けない：料金と悪用の抑制） */
+export const PREVIEW_SAMPLES = [
+  { id: 'greet', text: 'お呼びでしょうか。カイトです。' },
+  { id: 'ack', text: '承知しました。確認した情報から順に報告します。' },
+  { id: 'report', text: '現在の状況を分析しました。重要な点が二つあります。' },
+] as const;
+export type PreviewSampleId = (typeof PREVIEW_SAMPLES)[number]['id'];
 
 /** 入力音声の文字起こしに使うモデル（Realtime API が対応するもの） */
 export const TRANSCRIPTION_MODEL = 'gpt-4o-mini-transcribe';
@@ -47,6 +65,8 @@ export interface HealthInfo {
   apiKeyConfigured: boolean;
   model: string;
   maxSessionSeconds: number;
+  /** サーバーの既定の声（.env の REALTIME_VOICE） */
+  defaultVoice: string;
 }
 
 export interface ApiErrorBody {
@@ -58,6 +78,7 @@ export interface ApiErrorBody {
     | 'BAD_REQUEST'
     | 'UPSTREAM_AUTH'
     | 'UPSTREAM_ERROR'
+    | 'TIMEOUT'
     | 'NOT_FOUND'
     | 'INTERNAL';
   message: string;
