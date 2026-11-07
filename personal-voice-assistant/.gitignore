@@ -4,3 +4,6 @@ dist/
 .env.*
 !.env.example
 *.log
+
+# 音声認識モデル（npm run setup:wake で取得。サイズが大きいため Git に含めない）
+public/models/

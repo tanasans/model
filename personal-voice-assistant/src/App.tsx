@@ -1,6 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ASSISTANT_NAME, type HealthInfo } from '../shared/assistant';
+import { playChime } from './clap/chime';
 import { ClapPanel } from './clap/ClapPanel';
+import { WakePanel } from './wake/WakePanel';
+import { createTriggerGate } from './triggerGate';
 import { CLAP_NO_SPEECH_TIMEOUT_SEC, useVoiceSession, type Phase } from './useVoiceSession';
 
 const PHASE_LABEL: Record<Phase, string> = {
@@ -17,7 +20,28 @@ type ServerState = { kind: 'checking' } | { kind: 'down' } | { kind: 'up'; info:
 export function App() {
   const { phase, error, notice, lines, remaining, start, stop } = useVoiceSession();
   const [server, setServer] = useState<ServerState>({ kind: 'checking' });
-  const onClapStart = useCallback(() => start({ trigger: 'clap' }), [start]);
+  // 拍手・音声呼びかけ共通の起動処理。同時に検知しても接続は 1 回だけ（二重接続防止）
+  const [triggering, setTriggering] = useState(false);
+  const gateRef = useRef(createTriggerGate());
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
+  const triggerStart = useCallback(
+    async (source: 'clap' | 'wake') => {
+      if (phaseRef.current !== 'idle') return;
+      await gateRef.current.run(async () => {
+        setTriggering(true); // ここで拍手・音声の待機を止め、マイクを解放する
+        try {
+          await playChime();
+          await start({ trigger: source });
+        } finally {
+          setTriggering(false);
+        }
+      });
+    },
+    [start],
+  );
+  const onClapStart = useCallback(() => triggerStart('clap'), [triggerStart]);
+  const onWakeStart = useCallback(() => triggerStart('wake'), [triggerStart]);
 
   useEffect(() => {
     let alive = true;
@@ -58,7 +82,7 @@ export function App() {
       </section>
 
       <div className="buttons">
-        <button className="start" onClick={() => void start()} disabled={busy}>
+        <button className="start" onClick={() => void start()} disabled={busy || triggering}>
           会話開始
         </button>
         <button className="stop" onClick={() => void stop()} disabled={!busy || phase === 'stopping'}>
@@ -66,7 +90,8 @@ export function App() {
         </button>
       </div>
 
-      <ClapPanel conversationBusy={busy} onClapStart={onClapStart} noSpeechTimeoutSec={CLAP_NO_SPEECH_TIMEOUT_SEC} />
+      <WakePanel standbyPaused={busy || triggering} onWakeStart={onWakeStart} noSpeechTimeoutSec={CLAP_NO_SPEECH_TIMEOUT_SEC} />
+      <ClapPanel conversationBusy={busy || triggering} onClapStart={onClapStart} noSpeechTimeoutSec={CLAP_NO_SPEECH_TIMEOUT_SEC} />
 
       {error && (
         <div className="alert error" role="alert">

@@ -18,6 +18,10 @@
   "include": [
     "tests",
     "src/clap/clapDetector.ts",
-    "src/clap/calibration.ts"
+    "src/clap/calibration.ts",
+    "src/wake/wakePolicy.ts",
+    "src/wake/levelTracker.ts",
+    "src/wake/dsp.ts",
+    "src/triggerGate.ts"
   ]
 }

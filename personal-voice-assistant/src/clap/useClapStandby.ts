@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ClapDetector, type ClapProfile, type TransientInfo } from './clapDetector';
-import { MicError, openRawMic, type MicCapture, type MicProcessing } from './micCapture';
+import { subscribeMic, type MicSubscription } from '../audio/micHub';
+import { MicError, type MicProcessing } from './micCapture';
 
 /**
  * 拍手待機。マイク音声はブラウザ内で判定するだけで、どこにも送信・保存しない。
@@ -42,7 +43,7 @@ export function useClapStandby(opts: ClapStandbyOptions) {
   const [meter, setMeter] = useState<Meter | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
   const [processing, setProcessing] = useState<MicProcessing | null>(null);
-  const micRef = useRef<{ mic: MicCapture; detector: ClapDetector; timer: number } | null>(null);
+  const micRef = useRef<{ mic: MicSubscription; detector: ClapDetector; timer: number } | null>(null);
   const onDoubleRef = useRef(opts.onDoubleClap);
   onDoubleRef.current = opts.onDoubleClap;
   const settingsRef = useRef({ sensitivity, maxIntervalMs, profile });
@@ -64,7 +65,7 @@ export function useClapStandby(opts: ClapStandbyOptions) {
       setLog((l) => [{ ...e, id: ++idRef.current, at: Date.now() }, ...l].slice(0, LOG_MAX));
 
     let detector: ClapDetector | null = null;
-    openRawMic((samples) => {
+    subscribeMic((samples) => {
       if (!detector) return;
       for (const e of detector.process(samples)) {
         if (e.type === 'transient') push({ kind: 'sound', info: e.info });
@@ -123,7 +124,7 @@ export function useClapStandby(opts: ClapStandbyOptions) {
   return { status, error, meter, log, processing, clearLog: () => setLog([]) };
 }
 
-function release(ref: { current: { mic: MicCapture; timer: number } | null }): void {
+function release(ref: { current: { mic: MicSubscription; timer: number } | null }): void {
   const r = ref.current;
   ref.current = null;
   if (!r) return;

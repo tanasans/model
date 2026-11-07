@@ -85,7 +85,6 @@ export function ClapPanel({ conversationBusy, onClapStart, noSpeechTimeoutSec }:
   const [settings, setSettings] = useState<ClapSettings>(loadSettings);
   const [profileState, setProfileState] = useState<ProfileState>(loadProfile);
   const [manualOpen, setManualOpen] = useState(false);
-  const [triggering, setTriggering] = useState(false);
   const [testMode, setTestMode] = useState(false);
   const [testCount, setTestCount] = useState(0);
   const calib = useCalibration();
@@ -103,27 +102,19 @@ export function ClapPanel({ conversationBusy, onClapStart, noSpeechTimeoutSec }:
   }, []);
 
   const onDoubleClap = useCallback(() => {
-    if (triggering) return;
     if (testMode) {
       // テストモード：会話は開始せず、回数だけ数える（API 料金なし）
       setTestCount((n) => n + 1);
       void playChime();
       return;
     }
-    setTriggering(true); // ここで拍手検出のマイクを解放する
-    void (async () => {
-      try {
-        await playChime();
-        await onClapStart();
-      } finally {
-        setTriggering(false);
-      }
-    })();
-  }, [onClapStart, testMode, triggering]);
+    // 起動音・接続・二重起動防止は App 側でまとめて行う（音声呼びかけと共通）
+    void onClapStart();
+  }, [onClapStart, testMode]);
 
   const standby = useClapStandby({
     enabled: standbyOn,
-    paused: triggering || conversationBusy || calibrating,
+    paused: conversationBusy || calibrating,
     sensitivity: settings.sensitivity,
     maxIntervalMs: settings.maxIntervalMs,
     profile,

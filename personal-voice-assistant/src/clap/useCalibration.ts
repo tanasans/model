@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CALIB_TIMING, CalibrationRun, type CalibSnapshot } from './calibration';
-import { MicError, openRawMic, type MicCapture, type MicProcessing } from './micCapture';
+import { subscribeMic, type MicSubscription } from '../audio/micHub';
+import { MicError, type MicProcessing } from './micCapture';
 
 /**
  * キャリブレーションの画面側の管理（ブラウザ内のみ。API 呼び出し・送信・保存なし）。
@@ -19,7 +20,7 @@ export function useCalibration() {
   const [error, setError] = useState<string | null>(null);
   const [mic, setMic] = useState<MicProcessing | null>(null);
 
-  const micRef = useRef<MicCapture | null>(null);
+  const micRef = useRef<MicSubscription | null>(null);
   const runRef = useRef<CalibrationRun | null>(null);
   const timerRef = useRef<number | null>(null);
   const lastAudioRef = useRef(0);
@@ -38,7 +39,7 @@ export function useCalibration() {
     setError(null);
     setUiStep('ambient');
     try {
-      const capture = await openRawMic((samples) => {
+      const capture = await subscribeMic((samples) => {
         lastAudioRef.current = performance.now();
         runRef.current?.feed(samples);
       });

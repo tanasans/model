@@ -41,7 +41,7 @@ interface Active {
 
 export interface StartOptions {
   /** 'clap' の場合、発話が無ければ自動で切断する（誤起動時の課金を抑える） */
-  trigger?: 'manual' | 'clap';
+  trigger?: 'manual' | 'clap' | 'wake';
 }
 
 /** 拍手で起動したのに話しかけられなかった場合、この秒数で自動終了する */
@@ -188,11 +188,12 @@ export function useVoiceSession() {
       if (cancelled()) throw new CancelledError();
 
       if (transport.callId) void reportCall(leaseId, transport.callId);
-      if (options.trigger === 'clap') {
+      if (options.trigger === 'clap' || options.trigger === 'wake') {
+        const how = options.trigger === 'clap' ? '拍手' : '呼びかけ';
         active.noSpeechTimer = window.setTimeout(() => {
           if (activeRef.current !== active) return;
           void teardown({
-            reason: `拍手で起動しましたが、${CLAP_NO_SPEECH_TIMEOUT_SEC}秒間話しかけがなかったため自動で終了しました（誤起動対策）。`,
+            reason: `${how}で起動しましたが、${CLAP_NO_SPEECH_TIMEOUT_SEC}秒間話しかけがなかったため自動で終了しました（誤起動対策）。`,
           });
         }, CLAP_NO_SPEECH_TIMEOUT_SEC * 1000);
       }

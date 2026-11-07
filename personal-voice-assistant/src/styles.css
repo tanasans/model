@@ -119,3 +119,8 @@ button.ghost:disabled { opacity: 0.4; cursor: not-allowed; }
 .proc-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .manual { border: 1px dashed var(--border); border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
 .manual small { font-size: 0.75rem; }
+
+/* ---- 音声待機（呼びかけ） ---- */
+.wake { border-left: 4px solid var(--accent); }
+.settings select { padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); font: inherit; }
+.alert code { background: color-mix(in srgb, var(--text) 10%, transparent); padding: 1px 6px; border-radius: 4px; }
