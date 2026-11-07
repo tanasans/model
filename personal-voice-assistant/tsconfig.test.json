@@ -2,7 +2,9 @@
   "compilerOptions": {
     "target": "ES2022",
     "lib": [
-      "ES2022"
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
     ],
     "module": "ESNext",
     "moduleResolution": "Bundler",
@@ -22,6 +24,7 @@
     "src/wake/wakePolicy.ts",
     "src/wake/levelTracker.ts",
     "src/wake/dsp.ts",
-    "src/triggerGate.ts"
+    "src/triggerGate.ts",
+    "src/ui/coreState.ts"
   ]
 }

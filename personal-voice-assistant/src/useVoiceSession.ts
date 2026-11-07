@@ -31,6 +31,8 @@ export interface TranscriptLine {
 interface Active {
   session: RealtimeSession;
   stream: MediaStream;
+  /** 画面表示用の入力レベル計測（会話用マイクの実測値） */
+  meter: InputMeter | null;
   audio: HTMLAudioElement;
   leaseId: string;
   maxTimer: number;
@@ -75,6 +77,7 @@ export function useVoiceSession() {
     } catch {
       /* 既に閉じている */
     }
+    a.meter?.close();
     stopStream(a.stream);
     a.audio.pause();
     a.audio.srcObject = null;
@@ -158,6 +161,7 @@ export function useVoiceSession() {
           setRemaining(Math.max(0, Math.ceil((maxMs - (Date.now() - startedAt)) / 1000)));
         }, 1000),
         noSpeechTimer: null,
+        meter: createInputMeter(stream),
       };
       activeRef.current = active;
       stream = null; // 以降は active が所有
@@ -243,10 +247,44 @@ export function useVoiceSession() {
     };
   }, [teardown]);
 
-  return { phase, error, notice, lines, remaining, start, stop };
+  /** 会話中のマイク入力レベル（0〜1、実測）。会話中でなければ null */
+  const getInputLevel = useCallback((): number | null => activeRef.current?.meter?.level() ?? null, []);
+
+  return { phase, error, notice, lines, remaining, start, stop, getInputLevel };
 }
 
 // ---------- 補助 ----------
+interface InputMeter {
+  level(): number;
+  close(): void;
+}
+
+/** 会話用マイクの音量を測る（AnalyserNode。音声は保存・送信しない） */
+function createInputMeter(stream: MediaStream): InputMeter | null {
+  try {
+    const ctx = new AudioContext();
+    const src = ctx.createMediaStreamSource(stream);
+    const an = ctx.createAnalyser();
+    an.fftSize = 1024;
+    src.connect(an);
+    const buf = new Float32Array(an.fftSize);
+    return {
+      level() {
+        an.getFloatTimeDomainData(buf);
+        let e = 0;
+        for (let i = 0; i < buf.length; i++) e += buf[i]! * buf[i]!;
+        const db = 10 * Math.log10(e / buf.length + 1e-12);
+        return Math.min(1, Math.max(0, (db + 60) / 50)); // -60dB→0、-10dB→1
+      },
+      close() {
+        void ctx.close().catch(() => undefined);
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
 class UserFacingError extends Error {}
 class CancelledError extends Error {}
 

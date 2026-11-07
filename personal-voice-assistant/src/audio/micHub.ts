@@ -18,8 +18,28 @@ let capture: MicCapture | null = null;
 let opening: Promise<MicCapture> | null = null;
 const listeners = new Set<Listener>();
 
+let lastLevelDb: number | null = null;
+
 function dispatch(samples: Float32Array): void {
+  // 画面のレベル表示用（実際に受け取った音声の RMS。音声そのものは保持しない）
+  let e = 0;
+  for (let i = 0; i < samples.length; i++) e += samples[i]! * samples[i]!;
+  lastLevelDb = 10 * Math.log10(e / Math.max(1, samples.length) + 1e-12);
   for (const l of listeners) l(samples);
+}
+
+export interface MicHubInfo {
+  open: boolean;
+  /** 直近に受け取った音声のレベル（dBFS）。マイク未使用なら null */
+  levelDb: number | null;
+  processing: MicProcessing | null;
+}
+
+/** 画面表示用：待機用マイクの状態（実測値のみ） */
+export function getMicHubInfo(): MicHubInfo {
+  return capture
+    ? { open: true, levelDb: lastLevelDb, processing: capture.processing }
+    : { open: false, levelDb: null, processing: null };
 }
 
 export async function subscribeMic(onSamples: Listener): Promise<MicSubscription> {
@@ -53,6 +73,7 @@ export async function subscribeMic(onSamples: Listener): Promise<MicSubscription
       if (listeners.size === 0 && capture) {
         capture.close();
         capture = null;
+        lastLevelDb = null;
       }
     },
   };
