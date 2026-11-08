@@ -2022,3 +2022,118 @@ input[type='range']::-moz-range-thumb {
     align-items: stretch;
   }
 }
+
+/* ---------- KAITO 設定（KAITO.md ＋ 個人設定） ---------- */
+.pp {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.pp p {
+  margin: 0;
+  line-height: 1.6;
+}
+.pp-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: 0.82rem;
+  color: var(--sub);
+}
+.pp-status b {
+  color: var(--gold);
+  font-weight: 600;
+}
+.pp-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.pp-modes .is-on {
+  border-color: var(--red);
+  background: rgba(122, 16, 32, 0.45);
+}
+.pp-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.pp-sec-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.pp-title {
+  font-size: 0.88rem;
+  color: var(--text);
+  letter-spacing: 0.04em;
+}
+.pp-badge {
+  font-size: 0.7rem;
+  padding: 1px 7px;
+  border-radius: 2px;
+  border: 1px solid var(--steel);
+  color: var(--sub);
+}
+.pp-badge.is-local {
+  border-color: var(--gold-dark);
+  color: var(--gold);
+}
+.pp-badge.is-dirty {
+  border-color: var(--red);
+  color: var(--red-glow);
+}
+.pp-reset1 {
+  margin-left: auto;
+}
+.pp-text,
+.pp-input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--steel);
+  background: #0d0e12;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.82rem;
+  line-height: 1.6;
+  resize: vertical;
+}
+.pp-text:focus,
+.pp-input:focus {
+  border-color: var(--gold-dark);
+  outline: none;
+}
+.pp-count {
+  align-self: flex-end;
+  font-size: 0.7rem;
+  color: var(--sub);
+}
+.pp-count.is-over {
+  color: var(--red-glow);
+}
+.pp-actions {
+  flex-wrap: wrap;
+}
+.pp-pre {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 60vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: 0.78rem;
+  line-height: 1.6;
+  color: var(--text);
+  background: #0d0e12;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+.pp-ok {
+  color: var(--gold);
+  font-size: 0.84rem;
+}

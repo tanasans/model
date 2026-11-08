@@ -14,9 +14,10 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { previewVoice, PreviewError } from './voicePreview.js';
 import { runTool } from './tools/registry.js';
 import { buildRealtimeSession } from './sessionConfig.js';
+import { defaultPersonaPaths, importPersona, loadPersona, PersonaError, resetPersona, savePersona, sessionPersona } from './persona.js';
+import { isPersonaKey, type PersonaOverrides } from '../shared/persona.js';
 import OpenAI from 'openai';
 import {
-  ASSISTANT_INSTRUCTIONS,
   TRANSCRIPTION_MODEL,
   type ApiErrorBody,
   type HealthInfo,
@@ -72,6 +73,9 @@ const CLIENT_SECRET_TTL_SECONDS = 60;
 const MIN_CREATE_INTERVAL_MS = 3_000;
 /** クライアントが終了を通知しなかった場合でもリースを解放するまでの猶予 */
 const LEASE_GRACE_MS = 15_000;
+
+/** KAITO.md（基本設定）と local/KAITO.local.md（個人設定・Git 管理外）の場所 */
+const PERSONA_PATHS = defaultPersonaPaths(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
 
 const API_KEY = (process.env.OPENAI_API_KEY ?? '').trim();
 const openai = API_KEY ? new OpenAI({ apiKey: API_KEY, maxRetries: 1, timeout: 15_000 }) : null;
@@ -192,7 +196,7 @@ app.post('/api/voice-preview', requireLocalOrigin, express.json({ limit: '1kb' }
       model: MODEL,
       voice,
       text: sample.text,
-      instructions: ASSISTANT_INSTRUCTIONS,
+      instructions: sessionPersona(PERSONA_PATHS).instructions,
       url: process.env.REALTIME_WS_URL || undefined,
       reasoningEffort: reasoningAccepted ? REASONING_EFFORT : null,
       speed: previewSpeed,
@@ -209,6 +213,79 @@ app.post('/api/voice-preview', requireLocalOrigin, express.json({ limit: '1kb' }
     sendError(res, code === 'TIMEOUT' ? 504 : 502, code, err instanceof PreviewError ? err.message : '試聴に失敗しました。');
   } finally {
     previewBusy = false;
+  }
+});
+
+// ---------- KAITO の人格設定（KAITO.md ＋ 個人設定） ----------
+// 本文はログに出さない。GitHub への反映（KAITO.md の書き換え・コミット）はここでは一切行わない
+function sendPersonaError(res: Response, err: unknown): void {
+  if (err instanceof PersonaError) {
+    res.status(400).json({ code: 'BAD_REQUEST', message: err.message, issues: err.issues });
+    return;
+  }
+  log(`persona failed: ${describeError(err)}`);
+  sendError(res, 500, 'INTERNAL', '設定の読み書きに失敗しました。');
+}
+
+app.get('/api/persona', (req, res) => {
+  const origin = req.get('origin');
+  if (origin && !ALLOWED_ORIGINS.has(origin)) {
+    sendError(res, 403, 'FORBIDDEN_ORIGIN', '許可されていない接続元です。');
+    return;
+  }
+  res.json(loadPersona(PERSONA_PATHS));
+});
+
+app.put('/api/persona', requireLocalOrigin, express.json({ limit: '64kb' }), (req, res) => {
+  const raw: unknown = req.body?.sections;
+  if (!raw || typeof raw !== 'object') {
+    sendError(res, 400, 'BAD_REQUEST', '設定の形式が不正です。');
+    return;
+  }
+  const sections: PersonaOverrides = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!isPersonaKey(k) || typeof v !== 'string') {
+      sendError(res, 400, 'BAD_REQUEST', '設定の項目が不正です。');
+      return;
+    }
+    sections[k] = v;
+  }
+  try {
+    const view = savePersona(PERSONA_PATHS, sections);
+    log(`persona saved (overrides=${Object.keys(view.overrides).length})`);
+    res.json(view);
+  } catch (err) {
+    sendPersonaError(res, err);
+  }
+});
+
+app.post('/api/persona/import', requireLocalOrigin, express.json({ limit: '64kb' }), (req, res) => {
+  const md: unknown = req.body?.markdown;
+  if (typeof md !== 'string' || md.length > 60_000) {
+    sendError(res, 400, 'BAD_REQUEST', 'Markdown の内容が不正です。');
+    return;
+  }
+  try {
+    const r = importPersona(PERSONA_PATHS, md);
+    log(`persona imported (sections=${r.imported.length}, ignored=${r.ignored.length})`);
+    res.json(r);
+  } catch (err) {
+    sendPersonaError(res, err);
+  }
+});
+
+app.post('/api/persona/reset', requireLocalOrigin, express.json({ limit: '2kb' }), (req, res) => {
+  const keys: unknown = req.body?.keys;
+  if (keys !== undefined && !(Array.isArray(keys) && keys.every(isPersonaKey))) {
+    sendError(res, 400, 'BAD_REQUEST', '項目の指定が不正です。');
+    return;
+  }
+  try {
+    const view = resetPersona(PERSONA_PATHS, keys as string[] | undefined);
+    log(`persona reset (${keys ? `keys=${(keys as string[]).length}` : 'all'})`);
+    res.json(view);
+  } catch (err) {
+    sendPersonaError(res, err);
   }
 });
 
@@ -243,7 +320,9 @@ app.post('/api/session', requireLocalOrigin, express.json({ limit: '1kb' }), asy
   const audioProfile: AudioProfileId = isAudioProfileId(req.body?.audioProfile) ? req.body.audioProfile : DEFAULT_AUDIO_PROFILE;
   const speechSpeed: SpeechSpeed = isSpeechSpeed(req.body?.speechSpeed) ? req.body.speechSpeed : DEFAULT_SPEECH_SPEED;
   const audio = applyAudioProfile(audioProfile, BASE_AUDIO);
-  const opts: SecretOptions = { voice, audio, speechSpeed };
+  // KAITO.md と個人設定は会話のたびに読み直す（保存した変更は次の会話から反映）
+  const persona = sessionPersona(PERSONA_PATHS);
+  const opts: SecretOptions = { voice, audio, speechSpeed, instructions: persona.instructions };
 
   // 発行処理中に別リクエストが来ても 1 件に抑えるため、先にリースを確保する
   const id = randomUUID();
@@ -282,6 +361,8 @@ app.post('/api/session', requireLocalOrigin, express.json({ limit: '1kb' }), asy
       transcriptionModel: TRANSCRIPTION,
       audioProfile,
       speechSpeed,
+      instructions: persona.instructions,
+      greetingInstructions: persona.greetingInstructions,
     };
     log(`client secret issued voice=${voice} audioProfile=${audioProfile} speed=${speechSpeed}`);
     res.json(body);
@@ -361,6 +442,7 @@ interface SecretOptions {
   voice: string;
   audio: ConversationAudio;
   speechSpeed: SpeechSpeed;
+  instructions: string;
 }
 
 function issueClientSecret(client: OpenAI, effort: ReasoningEffort | null, o: SecretOptions) {
@@ -368,7 +450,7 @@ function issueClientSecret(client: OpenAI, effort: ReasoningEffort | null, o: Se
     expires_after: { anchor: 'created_at', seconds: CLIENT_SECRET_TTL_SECONDS },
     session: buildRealtimeSession({
       model: MODEL,
-      instructions: ASSISTANT_INSTRUCTIONS,
+      instructions: o.instructions,
       voice: o.voice,
       transcriptionModel: TRANSCRIPTION,
       effort,

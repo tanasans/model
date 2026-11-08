@@ -14,6 +14,8 @@ import { DisplayHost, type DisplayView } from './ui/display/DisplayHost';
 import { InfoPanel } from './ui/InfoPanel';
 import { SideDrawer, type DrawerTab } from './ui/SideDrawer';
 import { VoicePanel } from './ui/VoicePanel';
+import { PersonaPanel } from './ui/PersonaPanel';
+import { usePersona } from './persona/usePersona';
 import { TacticalBackdrop } from './ui/TacticalBackdrop';
 import { useVoiceSession } from './useVoiceSession';
 import { createKaitoTools, createWeatherActions } from './tools/kaitoTools';
@@ -53,6 +55,8 @@ export function App() {
   const [server, setServer] = useState<ServerView>({ kind: 'checking' });
   const [testMode, setTestMode] = useState(false);
   const [drawer, setDrawer] = useState<DrawerTab | null>(null);
+  // KAITO 設定は「KAITO設定」タブを開いたときだけ読み込む（待機中に無駄な処理をしない。OpenAI には接続しない）
+  const persona = usePersona(drawer === 'persona');
   const [calibOpen, setCalibOpen] = useState(false);
   const [lowMotion, setLowMotion] = useState(loadLowMotion);
   const [burstKey, setBurstKey] = useState(0);
@@ -210,6 +214,7 @@ export function App() {
         {drawer === 'voice' && (
           <VoicePanel vs={voiceSettings} conv={conversation} defaultVoice={server.kind === 'up' ? server.defaultVoice : null} apiKeyConfigured={apiKeyConfigured} busy={phase !== 'idle' || triggering} />
         )}
+        {drawer === 'persona' && <PersonaPanel p={persona} />}
         {drawer === 'detail' && (
           <DetailSettings
             wake={wake}

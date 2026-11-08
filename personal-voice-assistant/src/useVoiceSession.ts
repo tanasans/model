@@ -12,7 +12,6 @@ type RealtimeTool = NonNullable<ConstructorParameters<typeof RealtimeAgent>[0]['
 import {
   ASSISTANT_INSTRUCTIONS,
   ASSISTANT_NAME,
-  GREETING_INSTRUCTIONS,
   TRANSCRIPTION_MODEL,
   type ApiErrorBody,
   type SessionGrant,
@@ -150,7 +149,8 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
       const transport = new OpenAIRealtimeWebRTC({ mediaStream: stream, audioElement: audio });
       const agent = new RealtimeAgent({
         name: ASSISTANT_NAME,
-        instructions: ASSISTANT_INSTRUCTIONS,
+        // サーバーが KAITO.md と個人設定から組み立てた指示文（client secret と同じ）
+        instructions: grant.instructions || ASSISTANT_INSTRUCTIONS,
         voice: grant.voice,
         tools: getToolsRef.current?.() ?? [],
       });
@@ -228,11 +228,13 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
       if (cancelled()) throw new CancelledError();
 
       if (transport.callId) void reportCall(leaseId, transport.callId);
-      // 基本設定：起動したら最初に「はい、カイトです」と言う（この応答だけ短い専用の指示を使う）
-      try {
-        transport.sendEvent({ type: 'response.create', response: { instructions: GREETING_INSTRUCTIONS } });
-      } catch {
-        /* 挨拶が送れなくても会話は続けられる */
+      // 起動時の挨拶（KAITO.md の「起動時の挨拶」）。接続直後の 1 回だけで、会話の途中では言わない。空なら挨拶しない
+      if (grant.greetingInstructions) {
+        try {
+          transport.sendEvent({ type: 'response.create', response: { instructions: grant.greetingInstructions } });
+        } catch {
+          /* 挨拶が送れなくても会話は続けられる */
+        }
       }
       if (options.trigger === 'clap' || options.trigger === 'wake') {
         const how = options.trigger === 'clap' ? '拍手' : '呼びかけ';

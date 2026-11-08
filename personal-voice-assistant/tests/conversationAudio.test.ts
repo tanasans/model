@@ -147,7 +147,7 @@ test('基本設定: 広島弁・自然なアクセント・模倣しない・起
   assert.match(ASSISTANT_INSTRUCTIONS, /広島弁で会話/);
   assert.match(ASSISTANT_INSTRUCTIONS, /英語のような強弱の抑揚/);
   assert.match(ASSISTANT_INSTRUCTIONS, /模倣しないでください/);
-  assert.match(ASSISTANT_INSTRUCTIONS, /最初に「はい、カイトです」/);
+  assert.match(ASSISTANT_INSTRUCTIONS, /会話の途中で「はい、カイトです」などと名乗り直したり/, '挨拶は最初の 1 回だけ');
   assert.equal(GREETING_TEXT, 'はい、カイトです。');
   assert.match(GREETING_INSTRUCTIONS, /はい、カイトです。」とだけ/);
 });

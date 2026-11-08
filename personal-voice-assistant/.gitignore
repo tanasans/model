@@ -7,3 +7,6 @@ dist/
 
 # 音声認識モデル（npm run setup:wake で取得。サイズが大きいため Git に含めない）
 public/models/
+
+# 個人設定（KAITO.local.md など）。このパソコンだけに保存し、GitHub には含めない
+local/
