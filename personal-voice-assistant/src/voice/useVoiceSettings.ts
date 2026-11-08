@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
 import { isVoiceId, type ApiErrorBody, type PreviewSampleId, type VoiceId } from '../../shared/assistant';
+import type { SpeechSpeed } from '../../shared/conversationAudio';
 
 /**
  * 声の選択と試聴（画面から独立したロジック層）。
@@ -36,6 +37,7 @@ function load(): VoiceId | null {
 export interface PreviewResultView {
   voice: VoiceId;
   sampleId: PreviewSampleId;
+  speed: SpeechSpeed;
   firstAudioMs: number;
   totalMs: number;
   audioSeconds: number;
@@ -58,14 +60,14 @@ export function useVoiceSettings() {
     }
   }, []);
 
-  const preview = useCallback(async (voice: VoiceId, sampleId: PreviewSampleId) => {
+  const preview = useCallback(async (voice: VoiceId, sampleId: PreviewSampleId, speed: SpeechSpeed = 1) => {
     setPreviewing({ voice, sampleId });
     setPreviewError(null);
     try {
       const res = await fetch('/api/voice-preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ voice, sampleId }),
+        body: JSON.stringify({ voice, sampleId, ...(speed === 1 ? {} : { speed }) }),
       });
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as ApiErrorBody | null;
@@ -81,6 +83,7 @@ export function useVoiceSettings() {
           {
             voice,
             sampleId,
+            speed,
             firstAudioMs: Number(res.headers.get('X-First-Audio-Ms') ?? NaN),
             totalMs: Number(res.headers.get('X-Total-Ms') ?? NaN),
             audioSeconds: Number(res.headers.get('X-Audio-Seconds') ?? NaN),

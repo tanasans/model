@@ -29,7 +29,11 @@
     "src/ui/coreState.ts",
     "server/voicePreview.ts",
     "server/tools",
+    "server/sessionConfig.ts",
+    "src/voice/conversationSettings.ts",
     "shared/tools.ts",
+    "shared/conversationAudio.ts",
+    "shared/assistant.ts",
     "src/tools"
   ]
 }

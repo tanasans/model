@@ -16,6 +16,8 @@ export interface PreviewOptions {
   url?: string;
   timeoutMs?: number;
   reasoningEffort?: string | null;
+  /** 話す速さ（1 または未指定なら送らない＝従来どおり） */
+  speed?: number;
 }
 
 export interface PreviewResult {
@@ -80,7 +82,7 @@ export function previewVoice(o: PreviewOptions): Promise<PreviewResult> {
             output_modalities: ['audio'],
             max_output_tokens: 600,
             ...(o.reasoningEffort ? { reasoning: { effort: o.reasoningEffort } } : {}),
-            audio: { output: { voice: o.voice, format: { type: 'audio/pcm', rate: SAMPLE_RATE } } },
+            audio: { output: { voice: o.voice, format: { type: 'audio/pcm', rate: SAMPLE_RATE }, ...(o.speed && o.speed !== 1 ? { speed: o.speed } : {}) } },
           },
         }),
       );

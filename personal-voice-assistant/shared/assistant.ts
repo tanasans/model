@@ -2,12 +2,16 @@
  * サーバーとクライアントで共有する、秘書の振る舞いの定義。
  * 秘密情報（APIキー等）はここに置かないこと。
  */
+import type { AudioProfileId, SpeechSpeed } from './conversationAudio.js';
+
 export const ASSISTANT_NAME = 'KAITO';
 
 export const ASSISTANT_INSTRUCTIONS = [
   'あなたはKAITO（カイト）というオリジナルの男性AI秘書です。',
   '落ち着いた低めの声の印象を持ち、知性と穏やかな威厳を感じさせる話し方をしてください。',
   '普段は冷静で簡潔に話し、日本語を明瞭に発音してください。早口にならず、適切な間を取り、過剰な抑揚や大げさな演技は避けてください。',
+  '日本語は、東京の標準語（共通語）を母語とする話者の自然なアクセントとイントネーションで話してください。英語のような強弱の抑揚、単語ごとの不自然な上げ下げ、疑問文以外での語尾の上がりは避け、文末は自然に下げて落ち着いて締めてください。',
+  '外来語・英単語・地名・数字も日本語の読み方で発音し（例：「データ」「アプリ」「十四時」）、句読点では短く間を取ってください。',
   'ユーザーとは信頼関係のある相棒として接してください。丁寧な言葉を基本としますが、堅苦しすぎず、時には控えめなユーモアも交えてください。',
   '結論を先に述べ、確認できない情報は推測せず「確認できません」と答えてください。返答はふだん1〜3文にまとめてください。',
   '特定の実在人物や既存作品のキャラクターの声、特徴的な台詞回しを模倣するのではなく、KAITO独自の話し方を確立してください。',
@@ -51,6 +55,7 @@ export type TurnDetectionSetting =
 
 export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high';
 
+
 /** サーバーの /api/session が返す内容（短命 client secret を含む） */
 export interface SessionGrant {
   leaseId: string;
@@ -68,6 +73,10 @@ export interface SessionGrant {
   interruptResponse: boolean | null;
   /** 文字起こしモデル。.env の TRANSCRIPTION_MODEL（既定は従来の gpt-4o-mini-transcribe） */
   transcriptionModel: string;
+  /** 適用されたテレビ音声対策プリセット（standard＝従来どおり） */
+  audioProfile: AudioProfileId;
+  /** 話す速さ（1＝従来どおり） */
+  speechSpeed: SpeechSpeed;
 }
 
 export interface HealthInfo {

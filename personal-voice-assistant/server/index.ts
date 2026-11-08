@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { previewVoice, PreviewError } from './voicePreview.js';
 import { runTool } from './tools/registry.js';
+import { buildRealtimeSession } from './sessionConfig.js';
 import OpenAI from 'openai';
 import {
   ASSISTANT_INSTRUCTIONS,
@@ -25,6 +26,16 @@ import {
   type SessionGrant,
   type TurnDetectionSetting,
 } from '../shared/assistant.js';
+import {
+  applyAudioProfile,
+  type AudioProfileId,
+  type ConversationAudio,
+  DEFAULT_AUDIO_PROFILE,
+  DEFAULT_SPEECH_SPEED,
+  isAudioProfileId,
+  isSpeechSpeed,
+  type SpeechSpeed,
+} from '../shared/conversationAudio.js';
 
 // ---------- 設定 ----------
 const HOST = '127.0.0.1'; // ローカルホストのみ。外部公開しない。
@@ -43,6 +54,12 @@ const INTERRUPT_RESPONSE = ((): boolean | null => {
   return v === 'true' ? true : v === 'false' ? false : null;
 })();
 const TRANSCRIPTION = strEnv('TRANSCRIPTION_MODEL', TRANSCRIPTION_MODEL);
+/** .env 由来の会話音声設定（画面のプリセット「標準」はこれをそのまま使う） */
+const BASE_AUDIO: ConversationAudio = {
+  turnDetection: TURN_DETECTION,
+  inputNoiseReduction: INPUT_NOISE_REDUCTION,
+  interruptResponse: INTERRUPT_RESPONSE,
+};
 /** 推論対応モデル（gpt-realtime-2 系）では推論量を抑えて返答までの待ち時間を短くする */
 const REASONING_EFFORT: ReasoningEffort | null = /^gpt-realtime-2/.test(MODEL)
   ? enumEnv('REASONING_EFFORT', ['minimal', 'low', 'medium', 'high'] as const, 'low')
@@ -149,6 +166,7 @@ let lastPreviewAt = 0;
 app.post('/api/voice-preview', requireLocalOrigin, express.json({ limit: '1kb' }), async (req, res) => {
   const voice: unknown = req.body?.voice;
   const sample = PREVIEW_SAMPLES.find((x) => x.id === req.body?.sampleId);
+  const previewSpeed: SpeechSpeed = isSpeechSpeed(req.body?.speed) ? req.body.speed : DEFAULT_SPEECH_SPEED;
   if (!isVoiceId(voice) || !sample) {
     sendError(res, 400, 'BAD_REQUEST', '声または試聴文の指定が不正です。');
     return;
@@ -177,8 +195,9 @@ app.post('/api/voice-preview', requireLocalOrigin, express.json({ limit: '1kb' }
       instructions: ASSISTANT_INSTRUCTIONS,
       url: process.env.REALTIME_WS_URL || undefined,
       reasoningEffort: reasoningAccepted ? REASONING_EFFORT : null,
+      speed: previewSpeed,
     });
-    log(`voice preview ok voice=${voice} firstAudioMs=${r.firstAudioMs} totalMs=${r.totalMs}`);
+    log(`voice preview ok voice=${voice} speed=${previewSpeed} firstAudioMs=${r.firstAudioMs} totalMs=${r.totalMs}`);
     res.setHeader('Content-Type', 'audio/wav');
     res.setHeader('X-First-Audio-Ms', String(r.firstAudioMs));
     res.setHeader('X-Total-Ms', String(r.totalMs));
@@ -220,6 +239,11 @@ app.post('/api/session', requireLocalOrigin, express.json({ limit: '1kb' }), asy
   // 声の選択（許可リストにあるものだけ。無ければ .env の既定の声）
   const requestedVoice: unknown = req.body?.voice;
   const voice = isVoiceId(requestedVoice) ? requestedVoice : VOICE;
+  // テレビ音声対策・話す速さ（許可された値だけ。無ければ従来どおり）
+  const audioProfile: AudioProfileId = isAudioProfileId(req.body?.audioProfile) ? req.body.audioProfile : DEFAULT_AUDIO_PROFILE;
+  const speechSpeed: SpeechSpeed = isSpeechSpeed(req.body?.speechSpeed) ? req.body.speechSpeed : DEFAULT_SPEECH_SPEED;
+  const audio = applyAudioProfile(audioProfile, BASE_AUDIO);
+  const opts: SecretOptions = { voice, audio, speechSpeed };
 
   // 発行処理中に別リクエストが来ても 1 件に抑えるため、先にリースを確保する
   const id = randomUUID();
@@ -233,13 +257,13 @@ app.post('/api/session', requireLocalOrigin, express.json({ limit: '1kb' }), asy
   try {
     let secret: Awaited<ReturnType<typeof issueClientSecret>>;
     try {
-      secret = await issueClientSecret(openai, reasoningAccepted ? REASONING_EFFORT : null, voice);
+      secret = await issueClientSecret(openai, reasoningAccepted ? REASONING_EFFORT : null, opts);
     } catch (err) {
       // reasoning 設定が原因の 400 なら、設定なしで 1 回だけ再試行（従来の正常動作を壊さないため）
       if (reasoningAccepted && err instanceof OpenAI.BadRequestError) {
         reasoningAccepted = false;
         log('reasoning setting rejected; retrying without it');
-        secret = await issueClientSecret(openai, null, voice);
+        secret = await issueClientSecret(openai, null, opts);
       } else {
         throw err;
       }
@@ -251,13 +275,15 @@ app.post('/api/session', requireLocalOrigin, express.json({ limit: '1kb' }), asy
       model: MODEL,
       voice,
       maxSessionSeconds: MAX_SESSION_SECONDS,
-      turnDetection: TURN_DETECTION,
+      turnDetection: audio.turnDetection,
       reasoningEffort: reasoningAccepted ? REASONING_EFFORT : null,
-      inputNoiseReduction: INPUT_NOISE_REDUCTION,
-      interruptResponse: INTERRUPT_RESPONSE,
+      inputNoiseReduction: audio.inputNoiseReduction,
+      interruptResponse: audio.interruptResponse,
       transcriptionModel: TRANSCRIPTION,
+      audioProfile,
+      speechSpeed,
     };
-    log('client secret issued');
+    log(`client secret issued voice=${voice} audioProfile=${audioProfile} speed=${speechSpeed}`);
     res.json(body);
   } catch (err) {
     releaseLease(id, 'issue-failed');
@@ -331,34 +357,24 @@ process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
 // ---------- OpenAI 呼び出し ----------
-function issueClientSecret(client: OpenAI, effort: ReasoningEffort | null, voice: string) {
-  const td = TURN_DETECTION;
+interface SecretOptions {
+  voice: string;
+  audio: ConversationAudio;
+  speechSpeed: SpeechSpeed;
+}
+
+function issueClientSecret(client: OpenAI, effort: ReasoningEffort | null, o: SecretOptions) {
   return client.realtime.clientSecrets.create({
     expires_after: { anchor: 'created_at', seconds: CLIENT_SECRET_TTL_SECONDS },
-    session: {
-      type: 'realtime',
+    session: buildRealtimeSession({
       model: MODEL,
       instructions: ASSISTANT_INSTRUCTIONS,
-      output_modalities: ['audio'],
-      ...(effort ? { reasoning: { effort } } : {}),
-      audio: {
-        input: {
-          transcription: { model: TRANSCRIPTION, language: 'ja' },
-          ...(INPUT_NOISE_REDUCTION ? { noise_reduction: { type: INPUT_NOISE_REDUCTION } } : {}),
-          turn_detection:
-            td.type === 'semantic_vad'
-              ? { type: 'semantic_vad', eagerness: td.eagerness, ...(INTERRUPT_RESPONSE === null ? {} : { interrupt_response: INTERRUPT_RESPONSE }) }
-              : {
-                  type: 'server_vad',
-                  silence_duration_ms: td.silenceDurationMs,
-                  prefix_padding_ms: td.prefixPaddingMs,
-                  threshold: td.threshold,
-                  ...(INTERRUPT_RESPONSE === null ? {} : { interrupt_response: INTERRUPT_RESPONSE }),
-                },
-        },
-        output: { voice },
-      },
-    },
+      voice: o.voice,
+      transcriptionModel: TRANSCRIPTION,
+      effort,
+      audio: o.audio,
+      speechSpeed: o.speechSpeed,
+    }),
   });
 }
 

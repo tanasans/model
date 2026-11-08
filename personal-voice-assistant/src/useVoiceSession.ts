@@ -16,6 +16,7 @@ import {
   type ApiErrorBody,
   type SessionGrant,
 } from '../shared/assistant';
+import type { AudioProfileId, SpeechSpeed } from '../shared/conversationAudio';
 
 // SDK のデバッグログに会話内容を出さない
 setSensitiveDataLoggingEnabled(false);
@@ -49,6 +50,10 @@ export interface StartOptions {
   trigger?: 'manual' | 'clap' | 'wake';
   /** 使う声（未指定ならサーバーの既定）。次の新しい会話から適用される */
   voice?: string | null;
+  /** テレビ音声対策プリセット（未指定ならサーバーの既定＝従来どおり）。次の新しい会話から適用 */
+  audioProfile?: AudioProfileId | null;
+  /** 話す速さ（未指定なら従来どおり） */
+  speechSpeed?: SpeechSpeed | null;
 }
 
 /** 拍手で起動したのに話しかけられなかった場合、この秒数で自動終了する */
@@ -126,7 +131,11 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
 
       // 2) サーバーから短命 client secret を取得
       setPhase('fetching-token');
-      grant = await fetchGrant(options.voice ?? null);
+      grant = await fetchGrant({
+        ...(options.voice ? { voice: options.voice } : {}),
+        ...(options.audioProfile ? { audioProfile: options.audioProfile } : {}),
+        ...(options.speechSpeed ? { speechSpeed: options.speechSpeed } : {}),
+      });
       if (cancelled()) throw new CancelledError();
 
       // 3) WebRTC で Realtime API に接続
@@ -158,7 +167,8 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
                 ...(grant.interruptResponse === null || grant.interruptResponse === undefined ? {} : { interruptResponse: grant.interruptResponse }),
               },
             },
-            output: { voice: grant.voice },
+            // speed はサーバーが client secret に設定したものと同じ値（既定 1＝従来どおり）
+            output: { voice: grant.voice, speed: grant.speechSpeed ?? 1 },
           },
         },
       });
@@ -309,13 +319,13 @@ function stopStream(stream: MediaStream): void {
   for (const track of stream.getTracks()) track.stop();
 }
 
-async function fetchGrant(voice: string | null): Promise<SessionGrant> {
+async function fetchGrant(body: { voice?: string; audioProfile?: AudioProfileId; speechSpeed?: SpeechSpeed }): Promise<SessionGrant> {
   let res: Response;
   try {
     res = await fetch('/api/session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(voice ? { voice } : {}),
+      body: JSON.stringify(body),
     });
   } catch {
     throw new UserFacingError('ローカルサーバーに接続できません。サーバーが起動しているか確認してください。');

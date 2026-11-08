@@ -1,9 +1,24 @@
 import { useState } from 'react';
 import { PREVIEW_SAMPLES, VOICES, type PreviewSampleId, type VoiceId } from '../../shared/assistant';
+import { AUDIO_PROFILE_LABEL, AUDIO_PROFILES, SPEECH_SPEEDS, type AudioProfileId, type SpeechSpeed } from '../../shared/conversationAudio';
+import type { ConversationSettingsController } from '../voice/conversationSettings';
 import { PRIORITY_VOICES, type VoiceSettings } from '../voice/useVoiceSettings';
 
 /** 音声の選択と試聴（コンパクト版）。採用するまで既定の声は変わらない */
-export function VoicePanel({ vs, defaultVoice, apiKeyConfigured, busy }: { vs: VoiceSettings; defaultVoice: string | null; apiKeyConfigured: boolean; busy: boolean }) {
+export function VoicePanel({
+  vs,
+  conv,
+  defaultVoice,
+  apiKeyConfigured,
+  busy,
+}: {
+  vs: VoiceSettings;
+  conv: ConversationSettingsController;
+  defaultVoice: string | null;
+  apiKeyConfigured: boolean;
+  busy: boolean;
+}) {
+  const speed = conv.settings.speechSpeed;
   const current = (vs.chosen ?? defaultVoice ?? 'marin') as VoiceId;
   const [candidate, setCandidate] = useState<VoiceId>(current);
   const [sample, setSample] = useState<PreviewSampleId>('greet');
@@ -59,7 +74,7 @@ export function VoicePanel({ vs, defaultVoice, apiKeyConfigured, busy }: { vs: V
               className="btn btn-accent"
               onClick={() => {
                 setConfirming(false);
-                void vs.preview(candidate, sample);
+                void vs.preview(candidate, sample, speed);
               }}
             >
               試聴する
@@ -87,10 +102,32 @@ export function VoicePanel({ vs, defaultVoice, apiKeyConfigured, busy }: { vs: V
       {!apiKeyConfigured && <p className="muted small">APIキー未設定のため試聴できません。</p>}
       {last && Number.isFinite(last.firstAudioMs) && (
         <p className="muted small">
-          前回の試聴：最初の音まで {(last.firstAudioMs / 1000).toFixed(2)} 秒
+          前回の試聴：最初の音まで {(last.firstAudioMs / 1000).toFixed(2)} 秒（速さ {last.speed.toFixed(2)}）
         </p>
       )}
       {vs.previewError && <p className="vp-error">{vs.previewError}</p>}
+
+      <label className="field">
+        <span>話す速さ</span>
+        <select value={String(speed)} onChange={(e) => conv.update({ speechSpeed: Number(e.target.value) as SpeechSpeed })}>
+          {SPEECH_SPEEDS.map((v) => (
+            <option key={v} value={String(v)}>
+              {v === 1 ? '1.00（標準）' : v.toFixed(2)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="field">
+        <span>周囲の音（テレビ）対策</span>
+        <select value={conv.settings.audioProfile} onChange={(e) => conv.update({ audioProfile: e.target.value as AudioProfileId })}>
+          {AUDIO_PROFILES.map((p) => (
+            <option key={p} value={p}>
+              {AUDIO_PROFILE_LABEL[p]}
+            </option>
+          ))}
+        </select>
+      </label>
+      {conv.settings.audioProfile === 'tv_strong' && <p className="muted small">強：KAITO の返答中に声で割り込んで止めることはできません。</p>}
       <p className="muted small">変更は次の会話から適用されます。</p>
     </div>
   );

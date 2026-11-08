@@ -19,6 +19,7 @@ import { useVoiceSession } from './useVoiceSession';
 import { createKaitoTools, createWeatherActions } from './tools/kaitoTools';
 import { ForecastStore } from './tools/forecastStore';
 import { useVoiceSettings } from './voice/useVoiceSettings';
+import { useConversationSettings } from './voice/conversationSettings';
 import { useWakeController } from './wake/useWakeController';
 
 const UI_KEY = 'pva.ui.v1';
@@ -43,6 +44,7 @@ export function App() {
   const voice = useVoiceSession({ getTools });
   const { phase, start, stop } = voice;
   const voiceSettings = useVoiceSettings();
+  const conversation = useConversationSettings();
   const [server, setServer] = useState<ServerView>({ kind: 'checking' });
   const [testMode, setTestMode] = useState(false);
   const [drawer, setDrawer] = useState<DrawerTab | null>(null);
@@ -64,8 +66,9 @@ export function App() {
   const gateRef = useRef(createTriggerGate());
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
-  const chosenVoiceRef = useRef(voiceSettings.chosen);
-  chosenVoiceRef.current = voiceSettings.chosen;
+  // 次の会話で使う声・音声調整（保存済みの設定。会話中に変えても次の会話から適用）
+  const startOptsRef = useRef({ voice: voiceSettings.chosen, ...conversation.settings });
+  startOptsRef.current = { voice: voiceSettings.chosen, ...conversation.settings };
   const triggerStart = useCallback(
     async (source: 'clap' | 'wake') => {
       if (phaseRef.current !== 'idle') return;
@@ -73,7 +76,7 @@ export function App() {
         setTriggering(true); // ここで拍手・音声の待機を止め、マイクを解放する
         try {
           await playChime();
-          await start({ trigger: source, voice: chosenVoiceRef.current });
+          await start({ trigger: source, ...startOptsRef.current });
         } finally {
           setTriggering(false);
         }
@@ -83,7 +86,7 @@ export function App() {
   );
   const onManualStart = useCallback(() => {
     setBurstKey((k) => k + 1);
-    void gateRef.current.run(() => start({ voice: chosenVoiceRef.current }));
+    void gateRef.current.run(() => start({ ...startOptsRef.current }));
   }, [start]);
 
   const standbyPaused = phase !== 'idle' || triggering;
@@ -191,7 +194,7 @@ export function App() {
       />
       <SideDrawer tab={drawer} onTab={setDrawer} onClose={() => setDrawer(null)} alert={errors.length > 0}>
         {drawer === 'voice' && (
-          <VoicePanel vs={voiceSettings} defaultVoice={server.kind === 'up' ? server.defaultVoice : null} apiKeyConfigured={apiKeyConfigured} busy={phase !== 'idle' || triggering} />
+          <VoicePanel vs={voiceSettings} conv={conversation} defaultVoice={server.kind === 'up' ? server.defaultVoice : null} apiKeyConfigured={apiKeyConfigured} busy={phase !== 'idle' || triggering} />
         )}
         {drawer === 'detail' && (
           <DetailSettings
