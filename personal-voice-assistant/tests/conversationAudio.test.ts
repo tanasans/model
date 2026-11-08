@@ -165,7 +165,7 @@ test('基本設定: 記憶・プライバシー・重要操作のルールと、
   assert.match(ASSISTANT_INSTRUCTIONS, /認証情報を勝手に外部へ送信しない/);
   assert.match(ASSISTANT_INSTRUCTIONS, /本人確認と承認なしには行いません/);
   assert.match(ASSISTANT_INSTRUCTIONS, /実行操作は、現在一切行えません/);
-  for (const t of ['get_weather_forecast', 'get_weather_hours', 'show_main_screen', 'データがありません']) assert.ok(ASSISTANT_INSTRUCTIONS.includes(t), t);
+  for (const t of ['get_weather_forecast', 'get_weather_hours', 'show_main_screen', 'end_conversation', 'stop_standby', 'データがありません']) assert.ok(ASSISTANT_INSTRUCTIONS.includes(t), t);
 });
 
 /**

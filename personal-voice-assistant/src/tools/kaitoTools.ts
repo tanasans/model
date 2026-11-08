@@ -12,6 +12,11 @@ export interface ToolDeps {
   show: (v: DisplayView) => void;
   store: ForecastStore;
   fetchImpl?: typeof fetch;
+  /**
+   * 声で会話を終える（別れの一言の再生後に切断）。stopStandby なら音声待機・拍手待機も OFF にする。
+   * 会話中でなければ false を返す。
+   */
+  endConversation?: (opts: { stopStandby: boolean }) => boolean;
 }
 
 export function createWeatherActions({ show, store, fetchImpl }: ToolDeps) {
@@ -70,5 +75,28 @@ export function createKaitoTools(deps: ToolDeps) {
     execute: async () => a.mainScreen(),
   });
 
-  return [weather, hours, mainScreen];
+  const endConversation = tool({
+    name: 'end_conversation',
+    description:
+      '会話を終了する。ユーザーが「終わって」「もうええよ」「以上」「ありがとう、終わり」など、はっきり会話を終えたいと言ったときだけ使う。終わりたいのかどうか曖昧なときは使わず、先に確認する。「待機も止めて」「もう寝てええよ」など、呼びかけ・拍手での起動も止めたいと言われたら stop_standby を true にする。',
+    parameters: z.object({
+      stop_standby: z.boolean().describe('音声待機・拍手待機も OFF にするなら true。会話だけ終えるなら false'),
+    }),
+    execute: async (input) => endConversationAction(deps, input.stop_standby),
+  });
+
+  return [weather, hours, mainScreen, endConversation];
+}
+
+/** end_conversation の処理本体（テスト・開発用フックからも同じものを使う） */
+export function endConversationAction(deps: Pick<ToolDeps, 'endConversation'>, stopStandby: boolean) {
+  const ok = deps.endConversation?.({ stopStandby }) ?? false;
+  if (!ok) return { ok: false, error: '会話の終了処理を開始できませんでした。' };
+  return {
+    ok: true,
+    standby_stopped: stopStandby,
+    instruction: stopStandby
+      ? '別れの一言を短く言ってください（待機も止めたことを一言添える）。言い終わると会話は自動で終了します。'
+      : '別れの一言を短く言ってください。言い終わると会話は自動で終了します。',
+  };
 }

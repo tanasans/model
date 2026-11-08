@@ -18,6 +18,7 @@ import {
   type SessionGrant,
 } from '../shared/assistant';
 import type { AudioProfileId, SpeechSpeed } from '../shared/conversationAudio';
+import { createEndAfterReply, type EndAfterReply } from './endAfterReply';
 
 // SDK のデバッグログに会話内容を出さない
 setSensitiveDataLoggingEnabled(false);
@@ -44,6 +45,8 @@ interface Active {
   tickTimer: number;
   /** 拍手起動時：発話が無いまま一定時間経ったら切断するタイマー */
   noSpeechTimer: number | null;
+  /** 声で「終わって」と言われたとき、別れの一言を再生し終えてから切断する */
+  ender: EndAfterReply;
 }
 
 export interface StartOptions {
@@ -90,6 +93,7 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
     window.clearTimeout(a.maxTimer);
     if (a.noSpeechTimer !== null) window.clearTimeout(a.noSpeechTimer);
     window.clearInterval(a.tickTimer);
+    a.ender.dispose();
     try {
       a.session.close();
     } catch {
@@ -190,6 +194,9 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
         }, 1000),
         noSpeechTimer: null,
         meter: createInputMeter(stream),
+        ender: createEndAfterReply(() => {
+          if (activeRef.current === active) void teardown({ reason: '声の指示で会話を終了しました。' });
+        }),
       };
       activeRef.current = active;
       stream = null; // 以降は active が所有
@@ -197,6 +204,7 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
 
       session.on('history_updated', (history) => setLines(toLines(history)));
       session.on('transport_event', (ev) => {
+        active.ender.onEvent(ev.type);
         if (ev.type === 'input_audio_buffer.speech_started' && active.noSpeechTimer !== null) {
           window.clearTimeout(active.noSpeechTimer);
           active.noSpeechTimer = null;
@@ -284,7 +292,15 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
   /** 会話中のマイク入力レベル（0〜1、実測）。会話中でなければ null */
   const getInputLevel = useCallback((): number | null => activeRef.current?.meter?.level() ?? null, []);
 
-  return { phase, error, notice, lines, remaining, start, stop, getInputLevel };
+  /** 声で終了を指示されたとき：KAITO の別れの一言を再生し終えてから切断する（会話中でなければ何もしない） */
+  const endAfterReply = useCallback((): boolean => {
+    const a = activeRef.current;
+    if (!a) return false;
+    a.ender.request();
+    return true;
+  }, []);
+
+  return { phase, error, notice, lines, remaining, start, stop, endAfterReply, getInputLevel };
 }
 
 // ---------- 補助 ----------

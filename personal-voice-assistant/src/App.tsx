@@ -40,7 +40,12 @@ export function App() {
   const [display, setDisplay] = useState<DisplayView>({ kind: 'core' });
   // 取得済みの天気予報（1 時間ごとの元データ）。画面も AI も同じものを参照する
   const storeRef = useRef(new ForecastStore());
-  const getTools = useCallback(() => createKaitoTools({ show: setDisplay, store: storeRef.current }), []);
+  // 声での終了（end_conversation）。待機の OFF は下で定義する controller を参照するため ref 経由
+  const endByVoiceRef = useRef<(o: { stopStandby: boolean }) => boolean>(() => false);
+  const getTools = useCallback(
+    () => createKaitoTools({ show: setDisplay, store: storeRef.current, endConversation: (o) => endByVoiceRef.current(o) }),
+    [],
+  );
   const voice = useVoiceSession({ getTools });
   const { phase, start, stop } = voice;
   const voiceSettings = useVoiceSettings();
@@ -92,6 +97,15 @@ export function App() {
   const standbyPaused = phase !== 'idle' || triggering;
   const wake = useWakeController({ paused: standbyPaused, testMode, onWakeStart: () => triggerStart('wake') });
   const clap = useClapController({ paused: standbyPaused, testMode, onClapStart: () => triggerStart('clap') });
+  endByVoiceRef.current = ({ stopStandby }) => {
+    const ok = voice.endAfterReply();
+    if (ok && stopStandby) {
+      // 待機を OFF に（会話中は一時停止しているので、会話が終わっても再開しない）
+      wake.setOn(false);
+      clap.setStandbyOn(false);
+    }
+    return ok;
+  };
 
   // コアの演出は実際の検出イベントだけで動かす
   const lastWakeId = wake.lastDecision?.decision.accepted ? wake.lastDecision.id : null;

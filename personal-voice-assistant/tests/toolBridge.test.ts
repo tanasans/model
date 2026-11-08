@@ -143,11 +143,12 @@ test('「元の画面に戻して」で表示中の予報を解除して AI コ�
   assert.equal(t.store.displayedId, null);
 });
 
-test('会話開始時に 3 つのツールが Realtime API へ送られる', async () => {
+test('会話開始時に 4 つのツールが Realtime API へ送られる', async () => {
   const { RealtimeAgent, RealtimeSession } = await import('@openai/agents/realtime');
   const tools = createKaitoTools({ show: () => {}, store: new ForecastStore() });
   const agent = new RealtimeAgent({ name: 'KAITO', instructions: 'x', tools });
   const cfg = (await RealtimeSession.computeInitialSessionConfig(agent, { model: 'gpt-realtime-2.1' } as never)) as { tools?: Array<{ name: string; parameters: { properties: Record<string, unknown> } }> };
-  assert.deepEqual(cfg.tools?.map((t) => t.name), ['get_weather_forecast', 'get_weather_hours', 'show_main_screen']);
+  assert.deepEqual(cfg.tools?.map((t) => t.name), ['get_weather_forecast', 'get_weather_hours', 'show_main_screen', 'end_conversation']);
   assert.deepEqual(Object.keys(cfg.tools![1]!.parameters.properties), ['forecast_id', 'from_hour', 'to_hour']);
+  assert.deepEqual(Object.keys(cfg.tools![3]!.parameters.properties), ['stop_standby']);
 });
