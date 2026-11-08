@@ -4,7 +4,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import { applyAudioProfile, AUDIO_PROFILES, isAudioProfileId, isSpeechSpeed, type ConversationAudio } from '../shared/conversationAudio.ts';
-import { ASSISTANT_INSTRUCTIONS } from '../shared/assistant.ts';
+import { ASSISTANT_INSTRUCTIONS, GREETING_INSTRUCTIONS, GREETING_TEXT } from '../shared/assistant.ts';
 import { buildRealtimeSession } from '../server/sessionConfig.ts';
 import { previewVoice } from '../server/voicePreview.ts';
 import {
@@ -143,10 +143,29 @@ test('試聴: 話す速さを指定すると session.update に speed が入り�
   }
 });
 
-test('話し方の指示: 標準語の自然なアクセントを明示し、特定人物の模倣はしない', () => {
-  assert.match(ASSISTANT_INSTRUCTIONS, /標準語/);
-  assert.match(ASSISTANT_INSTRUCTIONS, /文末は自然に下げ/);
-  assert.match(ASSISTANT_INSTRUCTIONS, /模倣するのではなく/);
+test('基本設定: 広島弁・自然なアクセント・模倣しない・起動時の挨拶', () => {
+  assert.match(ASSISTANT_INSTRUCTIONS, /広島弁で会話/);
+  assert.match(ASSISTANT_INSTRUCTIONS, /英語のような強弱の抑揚/);
+  assert.match(ASSISTANT_INSTRUCTIONS, /模倣しないでください/);
+  assert.match(ASSISTANT_INSTRUCTIONS, /最初に「はい、カイトです」/);
+  assert.equal(GREETING_TEXT, 'はい、カイトです。');
+  assert.match(GREETING_INSTRUCTIONS, /はい、カイトです。」とだけ/);
+});
+
+test('基本設定: 使用しない前置きを列挙し、それを促す指示は残っていない', () => {
+  for (const p of ['結論から言います', '率直に言うと', '正直に申し上げますと', 'まず結論ですが', '素晴らしい質問ですね', 'いい質問ですね', '何かほかにお手伝いできることはありますか']) {
+    assert.ok(ASSISTANT_INSTRUCTIONS.includes(`「${p}」`), p);
+  }
+  assert.doesNotMatch(ASSISTANT_INSTRUCTIONS, /結論を先に述べ/);
+  assert.match(ASSISTANT_INSTRUCTIONS, /本題から話し始め/);
+});
+
+test('基本設定: 記憶・プライバシー・重要操作のルールと、既存の天気ツールの指示を保つ', () => {
+  assert.match(ASSISTANT_INSTRUCTIONS, /覚えているふりをしない/);
+  assert.match(ASSISTANT_INSTRUCTIONS, /認証情報を勝手に外部へ送信しない/);
+  assert.match(ASSISTANT_INSTRUCTIONS, /本人確認と承認なしには行いません/);
+  assert.match(ASSISTANT_INSTRUCTIONS, /実行操作は、現在一切行えません/);
+  for (const t of ['get_weather_forecast', 'get_weather_hours', 'show_main_screen', 'データがありません']) assert.ok(ASSISTANT_INSTRUCTIONS.includes(t), t);
 });
 
 /**

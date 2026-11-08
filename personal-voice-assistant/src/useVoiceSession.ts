@@ -12,6 +12,7 @@ type RealtimeTool = NonNullable<ConstructorParameters<typeof RealtimeAgent>[0]['
 import {
   ASSISTANT_INSTRUCTIONS,
   ASSISTANT_NAME,
+  GREETING_INSTRUCTIONS,
   TRANSCRIPTION_MODEL,
   type ApiErrorBody,
   type SessionGrant,
@@ -219,6 +220,12 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
       if (cancelled()) throw new CancelledError();
 
       if (transport.callId) void reportCall(leaseId, transport.callId);
+      // 基本設定：起動したら最初に「はい、カイトです」と言う（この応答だけ短い専用の指示を使う）
+      try {
+        transport.sendEvent({ type: 'response.create', response: { instructions: GREETING_INSTRUCTIONS } });
+      } catch {
+        /* 挨拶が送れなくても会話は続けられる */
+      }
       if (options.trigger === 'clap' || options.trigger === 'wake') {
         const how = options.trigger === 'clap' ? '拍手' : '呼びかけ';
         active.noSpeechTimer = window.setTimeout(() => {
