@@ -15,7 +15,8 @@
     "noUnusedLocals": true,
     "types": [
       "node"
-    ]
+    ],
+    "jsx": "react-jsx"
   },
   "include": [
     "tests",
@@ -26,6 +27,9 @@
     "src/wake/dsp.ts",
     "src/triggerGate.ts",
     "src/ui/coreState.ts",
-    "server/voicePreview.ts"
+    "server/voicePreview.ts",
+    "server/tools",
+    "shared/tools.ts",
+    "src/tools"
   ]
 }

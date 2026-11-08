@@ -6,6 +6,9 @@ import {
   setSensitiveDataLoggingEnabled,
   type RealtimeItem,
 } from '@openai/agents/realtime';
+
+/** RealtimeAgent に渡せるツールの型（SDK が公開している型から導出） */
+type RealtimeTool = NonNullable<ConstructorParameters<typeof RealtimeAgent>[0]['tools']>[number];
 import {
   ASSISTANT_INSTRUCTIONS,
   ASSISTANT_NAME,
@@ -51,7 +54,14 @@ export interface StartOptions {
 /** 拍手で起動したのに話しかけられなかった場合、この秒数で自動終了する */
 export const CLAP_NO_SPEECH_TIMEOUT_SEC = 15;
 
-export function useVoiceSession() {
+export interface VoiceSessionOptions {
+  /** 会話で使う Function Calling のツール（天気など）。毎回の会話開始時に取得する */
+  getTools?: () => RealtimeTool[];
+}
+
+export function useVoiceSession(opts: VoiceSessionOptions = {}) {
+  const getToolsRef = useRef(opts.getTools);
+  getToolsRef.current = opts.getTools;
   const [phase, setPhase] = useState<Phase>('idle');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -128,6 +138,7 @@ export function useVoiceSession() {
         name: ASSISTANT_NAME,
         instructions: ASSISTANT_INSTRUCTIONS,
         voice: grant.voice,
+        tools: getToolsRef.current?.() ?? [],
       });
       const session = new RealtimeSession(agent, {
         transport,
@@ -139,9 +150,13 @@ export function useVoiceSession() {
           ...(grant.reasoningEffort ? { reasoning: { effort: grant.reasoningEffort } } : {}),
           audio: {
             input: {
-              transcription: { model: TRANSCRIPTION_MODEL, language: 'ja' },
+              transcription: { model: grant.transcriptionModel || TRANSCRIPTION_MODEL, language: 'ja' },
+              ...(grant.inputNoiseReduction ? { noiseReduction: { type: grant.inputNoiseReduction } } : {}),
               // サーバーが client secret に設定したものと同じ値を使う（接続時に上書きされないように）
-              turnDetection: grant.turnDetection,
+              turnDetection: {
+                ...grant.turnDetection,
+                ...(grant.interruptResponse === null || grant.interruptResponse === undefined ? {} : { interruptResponse: grant.interruptResponse }),
+              },
             },
             output: { voice: grant.voice },
           },

@@ -16,6 +16,8 @@ import { SideDrawer, type DrawerTab } from './ui/SideDrawer';
 import { VoicePanel } from './ui/VoicePanel';
 import { TacticalBackdrop } from './ui/TacticalBackdrop';
 import { useVoiceSession } from './useVoiceSession';
+import { createKaitoTools } from './tools/kaitoTools';
+import { bridgeWeather, callServerTool } from './tools/toolBridge';
 import { useVoiceSettings } from './voice/useVoiceSettings';
 import { useWakeController } from './wake/useWakeController';
 
@@ -33,14 +35,15 @@ function loadLowMotion(): boolean {
  * 検出・会話・声のロジックは各 controller / hook にあり、ここは組み立てと表示だけ。
  */
 export function App() {
-  const voice = useVoiceSession();
+  // 中央の表示内容（天気予報などのパネル、または AI コア）。会話中のツールからも切り替える
+  const [display, setDisplay] = useState<DisplayView>({ kind: 'core' });
+  const getTools = useCallback(() => createKaitoTools(setDisplay), []);
+  const voice = useVoiceSession({ getTools });
   const { phase, start, stop } = voice;
   const voiceSettings = useVoiceSettings();
   const [server, setServer] = useState<ServerView>({ kind: 'checking' });
   const [testMode, setTestMode] = useState(false);
   const [drawer, setDrawer] = useState<DrawerTab | null>(null);
-  // 中央の表示内容（将来、音声の指示で天気・出馬表・チャートなどに切り替える）
-  const [display, setDisplay] = useState<DisplayView>({ kind: 'core' });
   const [calibOpen, setCalibOpen] = useState(false);
   const [lowMotion, setLowMotion] = useState(loadLowMotion);
   const [burstKey, setBurstKey] = useState(0);
@@ -97,6 +100,20 @@ export function App() {
     if (clapEventId.includes('1回目の拍手')) setPulseKey((k) => k + 1); // 拍手 1 回目：外周が反応
     else if (clapEventId.includes('拍手2回を検知')) setBurstKey((k) => k + 1);
   }, [clapEventId]);
+
+  // 開発用（npm run dev のときだけ）：会話と同じ経路でツールを実行して画面を確認する
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    (window as unknown as { __kaito?: unknown }).__kaito = {
+      async runTool(name: string, args: unknown) {
+        const result = await callServerTool(name, args);
+        const out = name === 'weather' ? bridgeWeather(result) : { display: null, forModel: result };
+        if (out.display) setDisplay(out.display);
+        return out.forModel;
+      },
+      showMain: () => setDisplay({ kind: 'core' }),
+    };
+  }, []);
 
   useEffect(() => {
     let alive = true;

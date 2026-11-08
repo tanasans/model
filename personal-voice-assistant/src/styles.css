@@ -1790,3 +1790,235 @@ input[type='range']::-moz-range-thumb {
     letter-spacing: 0.16em;
   }
 }
+
+/* =====================================================================
+   表示パネル（天気予報）と全画面ボタン
+   ===================================================================== */
+.ch-fs {
+  width: 38px;
+  height: 38px;
+}
+.ch-fs svg {
+  width: 18px;
+  height: 18px;
+}
+.dh-panel {
+  width: min(1560px, 94vw);
+  flex-direction: column;
+  gap: 14px;
+}
+.dh-panel .dh-mini {
+  align-self: center;
+}
+.dh-panel .dh-mini .cc {
+  --d: clamp(96px, 13vh, 150px);
+}
+.dh-panel .dh-mini .cc-sub,
+.dh-panel .dh-mini .cc-detail {
+  display: none;
+}
+.dh-panel .dh-mini .cc-state {
+  font-size: calc(var(--d) * 0.1);
+}
+.wp {
+  position: relative;
+  width: 100%;
+  background: linear-gradient(180deg, rgba(20, 22, 28, 0.92), rgba(14, 15, 20, 0.92));
+  border: 1px solid rgba(142, 115, 70, 0.55);
+  border-top: 2px solid var(--red);
+  padding: clamp(14px, 1.6vw, 26px);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  box-shadow: 0 0 60px rgba(122, 16, 32, 0.25);
+}
+.wp::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: -2px;
+  width: 22px;
+  height: 22px;
+  border-left: 2px solid var(--gold);
+  border-top: 2px solid var(--gold);
+}
+.wp-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px 32px;
+  flex-wrap: wrap;
+}
+.wp-kicker {
+  font-size: 0.66rem;
+  letter-spacing: 0.4em;
+  color: var(--gold);
+}
+.wp-title {
+  margin: 4px 0 0;
+  font-size: clamp(1.6rem, 2.4vw, 2.6rem);
+  font-weight: 400;
+  letter-spacing: 0.12em;
+}
+.wp-admin {
+  font-size: 0.5em;
+  color: var(--sub);
+  margin-left: 14px;
+  letter-spacing: 0.1em;
+}
+.wp-date {
+  color: var(--sub);
+  letter-spacing: 0.1em;
+}
+.wp-summary {
+  display: flex;
+  gap: clamp(16px, 3vw, 48px);
+  margin: 0;
+}
+.wp-summary div {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.wp-summary dt {
+  font-size: 0.7rem;
+  letter-spacing: 0.2em;
+  color: var(--sub);
+}
+.wp-summary dd {
+  margin: 0;
+  font-size: clamp(1.6rem, 2.4vw, 2.6rem);
+  font-weight: 300;
+  font-variant-numeric: tabular-nums;
+}
+.wp-summary dd.hot {
+  color: var(--red-glow);
+}
+.wp-close {
+  align-self: flex-start;
+}
+.wp-hours {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(24, minmax(0, 1fr));
+  gap: 4px;
+}
+.wp-hour {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  padding: 8px 2px;
+  border: 1px solid var(--line);
+  background: rgba(8, 9, 12, 0.5);
+  font-variant-numeric: tabular-nums;
+}
+.wp-time {
+  font-size: 0.72rem;
+  color: var(--sub);
+}
+.wp-temp {
+  font-size: 0.98rem;
+  color: var(--text);
+}
+.wp-prob {
+  position: relative;
+  width: 8px;
+  height: 46px;
+  background: rgba(58, 54, 57, 0.6);
+  display: flex;
+  align-items: flex-end;
+}
+.wp-bar {
+  width: 100%;
+  background: linear-gradient(0deg, var(--red), var(--red-glow));
+}
+.wp-prob-v {
+  font-size: 0.68rem;
+  color: var(--sub);
+}
+.wp-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 22px;
+  font-size: 0.74rem;
+  color: var(--sub);
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+.wp-foot a {
+  color: var(--gold);
+}
+.wp-missing {
+  color: var(--red-glow);
+}
+/* 天気アイコン */
+.wi {
+  fill: none;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.wi-sun {
+  stroke: var(--gold);
+}
+.wi-cloud {
+  stroke: var(--text);
+  opacity: 0.85;
+}
+.wi-rain {
+  stroke: var(--red-glow);
+}
+.wi-snow {
+  fill: var(--text);
+  stroke: none;
+}
+.wi-bolt {
+  fill: var(--gold);
+  stroke: none;
+}
+.wi-unknown {
+  fill: var(--sub);
+  stroke: none;
+  font-size: 18px;
+}
+@media (max-width: 1500px) {
+  .wp-hours {
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+  }
+}
+@media (max-width: 640px) {
+  .dh-panel {
+    width: calc(100vw - 24px);
+  }
+  .wp-hours {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  .wp-summary dd {
+    font-size: 1.4rem;
+  }
+  .stage {
+    overflow-y: auto;
+  }
+}
+/* 表示パネルが画面より高いとき、上側が隠れないようにする（安全な中央寄せ＋スクロール） */
+.stage {
+  justify-content: safe center;
+  overflow-y: auto;
+}
+@media (max-width: 640px) {
+  .dh-panel .dh-mini {
+    display: none;
+  }
+  .wp-close {
+    order: -1;
+    align-self: flex-end;
+  }
+}
+@media (max-width: 640px) {
+  .wp-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

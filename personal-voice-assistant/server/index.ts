@@ -12,6 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { previewVoice, PreviewError } from './voicePreview.js';
+import { runTool } from './tools/registry.js';
 import OpenAI from 'openai';
 import {
   ASSISTANT_INSTRUCTIONS,
@@ -32,6 +33,16 @@ const MODEL = strEnv('REALTIME_MODEL', 'gpt-realtime-2.1');
 const VOICE = strEnv('REALTIME_VOICE', 'marin');
 const MAX_SESSION_SECONDS = intEnv('MAX_SESSION_SECONDS', 300, 30, 1800);
 const TURN_DETECTION = turnDetectionFromEnv();
+// 以下は任意設定（未設定なら従来どおり）。テレビ音声などで会話が途切れる場合の対策候補
+const INPUT_NOISE_REDUCTION = ((): 'near_field' | 'far_field' | null => {
+  const v = enumEnv('INPUT_NOISE_REDUCTION', ['off', 'near_field', 'far_field'] as const, 'off');
+  return v === 'off' ? null : v;
+})();
+const INTERRUPT_RESPONSE = ((): boolean | null => {
+  const v = (process.env.VAD_INTERRUPT_RESPONSE ?? '').trim().toLowerCase();
+  return v === 'true' ? true : v === 'false' ? false : null;
+})();
+const TRANSCRIPTION = strEnv('TRANSCRIPTION_MODEL', TRANSCRIPTION_MODEL);
 /** 推論対応モデル（gpt-realtime-2 系）では推論量を抑えて返答までの待ち時間を短くする */
 const REASONING_EFFORT: ReasoningEffort | null = /^gpt-realtime-2/.test(MODEL)
   ? enumEnv('REASONING_EFFORT', ['minimal', 'low', 'medium', 'high'] as const, 'low')
@@ -109,6 +120,25 @@ app.get('/api/health', (_req, res) => {
     defaultVoice: VOICE,
   };
   res.json(body);
+});
+
+// ---------- 外部データ取得（会話中の Function Calling から呼ばれる） ----------
+// API キーが必要なデータ源も将来ここ（サーバー側）で扱い、ブラウザにはキーを渡さない
+const TOOL_WINDOW_MS = 60_000;
+const TOOL_MAX_PER_WINDOW = 30;
+let toolCalls: number[] = [];
+
+app.post('/api/tools/:name', requireLocalOrigin, express.json({ limit: '2kb' }), async (req, res) => {
+  const now = Date.now();
+  toolCalls = toolCalls.filter((t) => now - t < TOOL_WINDOW_MS);
+  if (toolCalls.length >= TOOL_MAX_PER_WINDOW) {
+    res.status(429).json({ ok: false, tool: req.params.name, error: { code: 'RATE_LIMITED', message: '短時間に取得が多すぎます。少し待ってください。' } });
+    return;
+  }
+  toolCalls.push(now);
+  const result = await runTool(String(req.params.name), req.body?.args);
+  log(`tool ${req.params.name} ${result.ok ? 'ok' : `failed code=${result.error.code}`}`);
+  res.json(result);
 });
 
 // ---------- 声の試聴（会話と同じ Realtime API を使うため、料金がかかる） ----------
@@ -223,6 +253,9 @@ app.post('/api/session', requireLocalOrigin, express.json({ limit: '1kb' }), asy
       maxSessionSeconds: MAX_SESSION_SECONDS,
       turnDetection: TURN_DETECTION,
       reasoningEffort: reasoningAccepted ? REASONING_EFFORT : null,
+      inputNoiseReduction: INPUT_NOISE_REDUCTION,
+      interruptResponse: INTERRUPT_RESPONSE,
+      transcriptionModel: TRANSCRIPTION,
     };
     log('client secret issued');
     res.json(body);
@@ -282,6 +315,7 @@ const server = app.listen(PORT, HOST, () => {
   log(`OPENAI_API_KEY: ${openai ? '設定済み' : '未設定（UI とエラー表示の確認のみ可能）'}`);
   log(`model=${MODEL} voice=${VOICE} maxSessionSeconds=${MAX_SESSION_SECONDS}`);
   log(`turnDetection=${JSON.stringify(TURN_DETECTION)} reasoningEffort=${REASONING_EFFORT ?? 'n/a'}`);
+  log(`inputNoiseReduction=${INPUT_NOISE_REDUCTION ?? 'off'} interruptResponse=${INTERRUPT_RESPONSE ?? 'default'} transcription=${TRANSCRIPTION}`);
 });
 server.on('error', (err) => {
   log(`server error: ${describeError(err)}`);
@@ -309,15 +343,17 @@ function issueClientSecret(client: OpenAI, effort: ReasoningEffort | null, voice
       ...(effort ? { reasoning: { effort } } : {}),
       audio: {
         input: {
-          transcription: { model: TRANSCRIPTION_MODEL, language: 'ja' },
+          transcription: { model: TRANSCRIPTION, language: 'ja' },
+          ...(INPUT_NOISE_REDUCTION ? { noise_reduction: { type: INPUT_NOISE_REDUCTION } } : {}),
           turn_detection:
             td.type === 'semantic_vad'
-              ? { type: 'semantic_vad', eagerness: td.eagerness }
+              ? { type: 'semantic_vad', eagerness: td.eagerness, ...(INTERRUPT_RESPONSE === null ? {} : { interrupt_response: INTERRUPT_RESPONSE }) }
               : {
                   type: 'server_vad',
                   silence_duration_ms: td.silenceDurationMs,
                   prefix_padding_ms: td.prefixPaddingMs,
                   threshold: td.threshold,
+                  ...(INTERRUPT_RESPONSE === null ? {} : { interrupt_response: INTERRUPT_RESPONSE }),
                 },
         },
         output: { voice },

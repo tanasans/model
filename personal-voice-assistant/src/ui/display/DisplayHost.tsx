@@ -1,10 +1,11 @@
 import type { ComponentType, ReactNode } from 'react';
+import { WeatherPanel } from '../panels/WeatherPanel';
 
 /**
  * 中央の情報表示領域。
  * 今は AI コアだけを表示するが、将来は音声の指示で「天気予報」「出馬表」「株価チャート」などの
  * パネルに切り替えられるよう、表示内容を DisplayView で指定し、パネルはレジストリに登録する構成にしている。
- * （今回はダミーのデータは表示しない。パネルは未登録）
+ * 第 1 弾は天気予報（Open-Meteo）。ダミーのデータは表示しない
  */
 export type DisplayView = { kind: 'core' } | { kind: 'panel'; id: string; params?: Record<string, unknown> };
 
@@ -14,8 +15,10 @@ export interface DisplayPanelProps {
   onClose: () => void;
 }
 
-/** 将来のパネル（例: 'weather', 'race-card', 'stock-chart'）をここに登録する */
-export const DISPLAY_PANELS: Record<string, ComponentType<DisplayPanelProps>> = {};
+/** 表示パネルの登録（将来: 'race-card' 出馬表、'stock-chart' 株価チャート など） */
+export const DISPLAY_PANELS: Record<string, ComponentType<DisplayPanelProps>> = {
+  weather: WeatherPanel,
+};
 
 export function DisplayHost({ view, core, onClose }: { view: DisplayView; core: ReactNode; onClose: () => void }) {
   if (view.kind === 'panel') {

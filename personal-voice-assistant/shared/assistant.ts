@@ -14,6 +14,9 @@ export const ASSISTANT_INSTRUCTIONS = [
   '名前を聞かれたら「カイト」と答えてください。',
   '現在は株価・収益・カレンダーなどの個人データには接続されていません。それらを聞かれたら、まだ参照できないと伝えてください。',
   '売買・送金・支払い・予約などの実行操作は一切行えません。',
+  '天気・気温・雨・傘などを聞かれたら、必ず get_weather_forecast ツールで取得し、その結果の数値だけで答えてください（記憶や推測で天気を答えない）。都市名が分からなければ聞き返してください。日付は今日・明日・明後日なら today / tomorrow / day_after_tomorrow を、それ以外は YYYY-MM-DD を指定してください。',
+  '取得に失敗したときや値が「データなし」のときは、そのまま伝えてください。数字は日本語で自然に読み上げてください（例：12.5度、降水確率30パーセント）。',
+  '「元の画面に戻して」「閉じて」などと言われたら show_main_screen ツールを使ってください。',
 ].join('\n');
 
 /**
@@ -58,6 +61,12 @@ export interface SessionGrant {
   turnDetection: TurnDetectionSetting;
   /** 推論対応モデルでのみ設定。非対応なら null（送信しない） */
   reasoningEffort: ReasoningEffort | null;
+  /** 入力の雑音低減（null＝使わない＝従来どおり）。.env の INPUT_NOISE_REDUCTION */
+  inputNoiseReduction: 'near_field' | 'far_field' | null;
+  /** 話し始めで AI の返答を止めるか（null＝API の既定＝従来どおり）。.env の VAD_INTERRUPT_RESPONSE */
+  interruptResponse: boolean | null;
+  /** 文字起こしモデル。.env の TRANSCRIPTION_MODEL（既定は従来の gpt-4o-mini-transcribe） */
+  transcriptionModel: string;
 }
 
 export interface HealthInfo {

@@ -30,9 +30,32 @@ export function CommandHeader({ server, phase }: { server: ServerView; phase: Ph
           <i aria-hidden />
           API <b>{api.t}</b>
         </span>
+        <FullscreenButton />
         <time className="ch-time">{now.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time>
       </div>
     </header>
+  );
+}
+
+/** 全画面表示の切り替え（F11 と同じ。Esc でも解除できる） */
+function FullscreenButton() {
+  const [full, setFull] = useState(() => typeof document !== 'undefined' && Boolean(document.fullscreenElement));
+  useEffect(() => {
+    const on = () => setFull(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', on);
+    return () => document.removeEventListener('fullscreenchange', on);
+  }, []);
+  if (typeof document === 'undefined' || !document.fullscreenEnabled) return null;
+  const toggle = () => {
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+    else void document.documentElement.requestFullscreen().catch(() => undefined);
+  };
+  return (
+    <button className="icon-btn ch-fs" onClick={toggle} aria-label={full ? '全画面を解除' : '全画面表示'} title={full ? '全画面を解除（Esc）' : '全画面表示'}>
+      <svg viewBox="0 0 24 24" aria-hidden>
+        {full ? <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" /> : <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />}
+      </svg>
+    </button>
   );
 }
 
