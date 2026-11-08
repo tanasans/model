@@ -190,7 +190,10 @@ Windows 側の「オーディオの強化」「音声フォーカス」や、メ
   - 最高・最低気温、最大降水確率
   - 地点（都道府県・緯度経度）、情報源（Open-Meteo・CC BY 4.0）、取得日時
 - **データの扱い**
-  - 音声の回答と画面の数値は、同じ 1 回の取得結果から作ります（`src/tools/toolBridge.ts`）。
+  - 取得した 1 時間ごとの元データは、ブラウザ内の予報ストア（`src/tools/forecastStore.ts`）に保存します。画面も AI も、この同じデータを参照します。
+  - AI には 24 時間分すべてを渡します（間引きません）。「14時の気温は？」「13時から17時まで」「画面の天気を詳しく」などの質問には、AI が `get_weather_hours` ツールで取得済みデータの該当時刻を参照して答えます（再取得しません）。
+  - 同じ都市・日付の再質問は、10 分間は取得済みデータを再利用します。
+  - 時刻は予報地点の現地時刻です。
   - 取得できなかった値は「—」（AI には「データなし」）とし、前後の値などから推測で補いません。
   - 場所が見つからない場合や取得に失敗した場合は、そのまま伝えます（別の都市で代用しません）。
 - **都市名**
@@ -210,7 +213,8 @@ Windows 側の「オーディオの強化」「音声フォーカス」や、メ
   → Realtime API が Function Calling で get_weather_forecast を呼ぶ（src/tools/kaitoTools.ts）
   → ブラウザ → ローカルサーバー POST /api/tools/weather（server/tools/registry.ts）
   → server/tools/weather.ts が Open-Meteo から取得し、共通形式 ToolResult（データ・情報源・取得日時）で返す
-  → toolBridge.ts が同じ ToolResult から「画面表示」と「AI への回答材料」を作る
+  → toolBridge.ts が結果を予報ストアに保存し、同じデータから「画面表示」と「AI への回答材料（24 時間分）」を作る
+  → 特定時刻の質問には get_weather_hours が予報ストアから該当時刻を返す（再取得なし）
   → 中央の DisplayHost が登録パネル（src/ui/panels/WeatherPanel.tsx）に切り替える
 ```
 

@@ -16,8 +16,8 @@ import { SideDrawer, type DrawerTab } from './ui/SideDrawer';
 import { VoicePanel } from './ui/VoicePanel';
 import { TacticalBackdrop } from './ui/TacticalBackdrop';
 import { useVoiceSession } from './useVoiceSession';
-import { createKaitoTools } from './tools/kaitoTools';
-import { bridgeWeather, callServerTool } from './tools/toolBridge';
+import { createKaitoTools, createWeatherActions } from './tools/kaitoTools';
+import { ForecastStore } from './tools/forecastStore';
 import { useVoiceSettings } from './voice/useVoiceSettings';
 import { useWakeController } from './wake/useWakeController';
 
@@ -37,7 +37,9 @@ function loadLowMotion(): boolean {
 export function App() {
   // 中央の表示内容（天気予報などのパネル、または AI コア）。会話中のツールからも切り替える
   const [display, setDisplay] = useState<DisplayView>({ kind: 'core' });
-  const getTools = useCallback(() => createKaitoTools(setDisplay), []);
+  // 取得済みの天気予報（1 時間ごとの元データ）。画面も AI も同じものを参照する
+  const storeRef = useRef(new ForecastStore());
+  const getTools = useCallback(() => createKaitoTools({ show: setDisplay, store: storeRef.current }), []);
   const voice = useVoiceSession({ getTools });
   const { phase, start, stop } = voice;
   const voiceSettings = useVoiceSettings();
@@ -104,14 +106,12 @@ export function App() {
   // 開発用（npm run dev のときだけ）：会話と同じ経路でツールを実行して画面を確認する
   useEffect(() => {
     if (!import.meta.env.DEV) return;
+    // AI のツールと同じ処理（createWeatherActions）を呼ぶ
+    const actions = createWeatherActions({ show: setDisplay, store: storeRef.current });
     (window as unknown as { __kaito?: unknown }).__kaito = {
-      async runTool(name: string, args: unknown) {
-        const result = await callServerTool(name, args);
-        const out = name === 'weather' ? bridgeWeather(result) : { display: null, forModel: result };
-        if (out.display) setDisplay(out.display);
-        return out.forModel;
-      },
-      showMain: () => setDisplay({ kind: 'core' }),
+      forecast: actions.forecast,
+      hours: actions.hours,
+      showMain: actions.mainScreen,
     };
   }, []);
 
@@ -167,7 +167,10 @@ export function App() {
       <main className="stage" aria-live="polite">
         <DisplayHost
           view={display}
-          onClose={() => setDisplay({ kind: 'core' })}
+          onClose={() => {
+            storeRef.current.displayedId = null;
+            setDisplay({ kind: 'core' });
+          }}
           core={<CommandCore view={view} readLevel={readCoreLevel} burstKey={burstKey} pulseKey={pulseKey} detail={remaining} />}
         />
         {view.notice && <p className="stage-notice">{view.notice}</p>}
