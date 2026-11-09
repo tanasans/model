@@ -1,5 +1,5 @@
 /**
- * 個人設定（local/KAITO.local.md）の内容を、GitHub で管理する基本設定 KAITO.md に反映する（明示的な操作のときだけ）。
+ * 個人設定（データ領域の KAITO.local.md）の内容を、GitHub で管理する基本設定 KAITO.md に反映する（明示的な操作のときだけ）。
  *
  *   npm run persona:promote            … 反映される項目を表示するだけ（ファイルは変更しない）
  *   npm run persona:promote -- --write … KAITO.md を書き換える（Git へのコミット・プッシュは行わない）
@@ -9,11 +9,13 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { defaultPersonaPaths, loadPersona } from '../server/persona.ts';
+import { defaultPersonaPaths, loadPersona, migrateLegacyPersona } from '../server/persona.ts';
+import { resolveDataDir } from '../server/memory/dataDir.ts';
 import { findPersonalInfo, findSecrets, PERSONA_TITLE, renderPersonaMarkdown, type PersonaKey } from '../shared/persona.ts';
 
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const paths = defaultPersonaPaths(appDir);
+const paths = defaultPersonaPaths(appDir, resolveDataDir());
+migrateLegacyPersona(appDir, paths);
 const write = process.argv.includes('--write');
 const view = loadPersona(paths);
 const keys = Object.keys(view.overrides) as PersonaKey[];

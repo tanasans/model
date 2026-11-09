@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { HealthInfo } from '../shared/assistant';
 import { getMicHubInfo } from './audio/micHub';
 import { playChime } from './clap/chime';
@@ -15,6 +15,10 @@ import { InfoPanel } from './ui/InfoPanel';
 import { SideDrawer, type DrawerTab } from './ui/SideDrawer';
 import { VoicePanel } from './ui/VoicePanel';
 import { PersonaPanel } from './ui/PersonaPanel';
+import { MemoryPanel } from './ui/MemoryPanel';
+import { useMemory } from './memory/useMemory';
+import { ConversationLogger } from './memory/conversationLogger';
+import { createMemoryTools } from './memory/memoryTools';
 import { usePersona } from './persona/usePersona';
 import { TacticalBackdrop } from './ui/TacticalBackdrop';
 import { useVoiceSession } from './useVoiceSession';
@@ -44,11 +48,35 @@ export function App() {
   const storeRef = useRef(new ForecastStore());
   // 声での終了（end_conversation）。待機の OFF は下で定義する controller を参照するため ref 経由
   const endByVoiceRef = useRef<(o: { stopStandby: boolean }) => boolean>(() => false);
-  const getTools = useCallback(
-    () => createKaitoTools({ show: setDisplay, store: storeRef.current, endConversation: (o) => endByVoiceRef.current(o) }),
+  // 会話の記録（確定した文字起こしだけをローカルの記憶データベースへ。誤起動で発言がない会話は保存しない）
+  const loggerRef = useRef<ConversationLogger | null>(null);
+  const observer = useMemo(
+    () => ({
+      onStart: (trigger: 'manual' | 'clap' | 'wake', startedAt: number) => {
+        loggerRef.current = new ConversationLogger(trigger, startedAt);
+      },
+      onEvent: (ev: { type?: string; [k: string]: unknown }) => loggerRef.current?.handleEvent(ev),
+      onEnd: () => {
+        const l = loggerRef.current;
+        loggerRef.current = null;
+        void l?.end();
+      },
+    }),
     [],
   );
-  const voice = useVoiceSession({ getTools });
+  const getTools = useCallback(
+    () => [
+      ...createKaitoTools({ show: setDisplay, store: storeRef.current, endConversation: (o) => endByVoiceRef.current(o) }),
+      ...createMemoryTools({
+        current: () => {
+          const l = loggerRef.current;
+          return l ? { sessionId: l.sessionId, userFinalCount: l.recorder.userFinalCount, recentUserTexts: l.recorder.recentUserTexts() } : null;
+        },
+      }),
+    ],
+    [],
+  );
+  const voice = useVoiceSession({ getTools, observer });
   const { phase, start, stop } = voice;
   const voiceSettings = useVoiceSettings();
   const conversation = useConversationSettings();
@@ -57,6 +85,8 @@ export function App() {
   const [drawer, setDrawer] = useState<DrawerTab | null>(null);
   // KAITO 設定は「KAITO設定」タブを開いたときだけ読み込む（待機中に無駄な処理をしない。OpenAI には接続しない）
   const persona = usePersona(drawer === 'persona');
+  // 記憶の管理画面は「MEMORY」タブを開いたときだけ読み込む（ローカルの SQLite のみ。OpenAI には接続しない）
+  const memory = useMemory(drawer === 'memory');
   const [calibOpen, setCalibOpen] = useState(false);
   const [lowMotion, setLowMotion] = useState(loadLowMotion);
   const [burstKey, setBurstKey] = useState(0);
@@ -215,6 +245,7 @@ export function App() {
           <VoicePanel vs={voiceSettings} conv={conversation} defaultVoice={server.kind === 'up' ? server.defaultVoice : null} apiKeyConfigured={apiKeyConfigured} busy={phase !== 'idle' || triggering} />
         )}
         {drawer === 'persona' && <PersonaPanel p={persona} />}
+        {drawer === 'memory' && <MemoryPanel m={memory} busy={phase !== 'idle'} />}
         {drawer === 'detail' && (
           <DetailSettings
             wake={wake}

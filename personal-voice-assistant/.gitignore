@@ -10,3 +10,12 @@ public/models/
 
 # 個人設定（KAITO.local.md など）。このパソコンだけに保存し、GitHub には含めない
 local/
+
+# 長期記憶のデータ・バックアップ（ユーザー専用フォルダに保存されるが、念のため誤って入れないようにする）
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3
+*.db
+kaito-memory*.json

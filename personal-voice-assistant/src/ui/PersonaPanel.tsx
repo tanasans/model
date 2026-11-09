@@ -11,7 +11,7 @@ const MODES: Array<[Mode, string]> = [
 ];
 
 /**
- * KAITO 設定（KAITO.md ＝ 基本設定、local/KAITO.local.md ＝ 個人設定）の閲覧・編集。
+ * KAITO 設定（KAITO.md ＝ 基本設定、データ領域の KAITO.local.md ＝ 個人設定）の閲覧・編集。
  * 変更は次の会話から反映。GitHub への反映は行わない（README の手順で明示的に行う）。
  */
 export function PersonaPanel({ p }: { p: PersonaController }) {
@@ -167,7 +167,7 @@ export function PersonaPanel({ p }: { p: PersonaController }) {
           すべて初期状態に戻す
         </button>
       )}
-      <p className="muted small">保存先はこのパソコンの local/KAITO.local.md です（GitHub には送られません）。変更は次の会話から反映されます。</p>
+      <p className="muted small">保存先はこのパソコンの {view.localPath ?? 'KAITO.local.md'} です（GitHub には送られず、新しい ZIP に更新しても消えません）。変更は次の会話から反映されます。</p>
     </div>
   );
 }

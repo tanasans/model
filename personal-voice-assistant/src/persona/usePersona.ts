@@ -3,7 +3,7 @@ import { renderPersonaMarkdown, type PersonaKey, type PersonaOverrides, type Per
 
 /**
  * KAITO 設定（KAITO.md ＋ 個人設定）の取得・保存・初期化・取り込み・書き出し。
- * 保存先はローカルサーバー（local/KAITO.local.md）。GitHub には送らない。変更は次の会話から反映。
+ * 保存先はローカルサーバー（ユーザー専用のデータ領域の KAITO.local.md）。GitHub には送らない。変更は次の会話から反映。
  */
 interface ErrorBody {
   message?: string;

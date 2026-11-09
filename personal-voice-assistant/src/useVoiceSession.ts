@@ -65,11 +65,22 @@ export const CLAP_NO_SPEECH_TIMEOUT_SEC = 15;
 export interface VoiceSessionOptions {
   /** 会話で使う Function Calling のツール（天気など）。毎回の会話開始時に取得する */
   getTools?: () => RealtimeTool[];
+  /**
+   * 会話の記録（長期記憶の会話履歴）。会話の開始・Realtime のサーバーイベント・終了を受け取る。
+   * 文字起こしの確定・失敗の判断は受け取った側（ConversationLogger）で行う
+   */
+  observer?: {
+    onStart: (trigger: 'manual' | 'clap' | 'wake', startedAt: number) => void;
+    onEvent: (ev: { type?: string; [k: string]: unknown }) => void;
+    onEnd: () => void;
+  };
 }
 
 export function useVoiceSession(opts: VoiceSessionOptions = {}) {
   const getToolsRef = useRef(opts.getTools);
   getToolsRef.current = opts.getTools;
+  const observerRef = useRef(opts.observer);
+  observerRef.current = opts.observer;
   const [phase, setPhase] = useState<Phase>('idle');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -102,6 +113,11 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
     stopStream(a.stream);
     a.audio.pause();
     a.audio.srcObject = null;
+    try {
+      observerRef.current?.onEnd();
+    } catch {
+      /* 記録の失敗で会話の終了処理を止めない */
+    }
     await notifyEnd(a.leaseId);
     setRemaining(null);
     setPhase('idle');
@@ -199,11 +215,21 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
         }),
       };
       activeRef.current = active;
+      try {
+        observerRef.current?.onStart(options.trigger ?? 'manual', startedAt);
+      } catch {
+        /* 記録できなくても会話は続ける */
+      }
       stream = null; // 以降は active が所有
       setRemaining(grant.maxSessionSeconds);
 
       session.on('history_updated', (history) => setLines(toLines(history)));
       session.on('transport_event', (ev) => {
+        try {
+          observerRef.current?.onEvent(ev as { type?: string; [k: string]: unknown });
+        } catch {
+          /* 記録の失敗で会話を止めない */
+        }
         active.ender.onEvent(ev.type);
         if (ev.type === 'input_audio_buffer.speech_started' && active.noSpeechTimer !== null) {
           window.clearTimeout(active.noSpeechTimer);

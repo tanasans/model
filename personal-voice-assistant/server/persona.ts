@@ -1,11 +1,11 @@
 /**
  * KAITO の人格設定ファイルの読み書き（サーバー側だけ）。
  * - 基本設定 KAITO.md は読むだけ（サーバーが書き換えることはない。GitHub への反映は利用者の明示的な操作のみ）
- * - 個人設定は local/KAITO.local.md（.gitignore 済み）に、基本設定から変更した項目だけを保存する
+ * - 個人設定はユーザー専用のデータ領域の KAITO.local.md に、基本設定から変更した項目だけを保存する
  * - 認証情報らしき文字列を含む設定は保存しない
  * - ログに設定の本文は出さない
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import {
   buildGreetingInstructions,
@@ -33,9 +33,28 @@ export interface PersonaPaths {
   local: string;
 }
 
-/** 既定の保存場所（personal-voice-assistant/KAITO.md と personal-voice-assistant/local/KAITO.local.md） */
-export function defaultPersonaPaths(appDir: string): PersonaPaths {
-  return { base: path.join(appDir, 'KAITO.md'), local: path.join(appDir, 'local', 'KAITO.local.md') };
+/**
+ * 既定の保存場所。基本設定は personal-voice-assistant/KAITO.md、
+ * 個人設定はユーザー専用のデータ領域（記憶と同じ場所。ZIP を展開し直しても消えない）。
+ */
+export function defaultPersonaPaths(appDir: string, dataDir: string): PersonaPaths {
+  return { base: path.join(appDir, 'KAITO.md'), local: path.join(dataDir, 'KAITO.local.md') };
+}
+
+/**
+ * 以前の版の保存場所（personal-voice-assistant/local/KAITO.local.md）から個人設定を引き継ぐ。
+ * 新しい場所にまだ無いときだけコピーする（元のファイルは消さない・既存を上書きしない）。
+ */
+export function migrateLegacyPersona(appDir: string, paths: PersonaPaths): boolean {
+  const legacy = path.join(appDir, 'local', 'KAITO.local.md');
+  if (!existsSync(legacy) || existsSync(paths.local) || path.resolve(legacy) === path.resolve(paths.local)) return false;
+  try {
+    mkdirSync(path.dirname(paths.local), { recursive: true });
+    copyFileSync(legacy, paths.local);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export class PersonaError extends Error {
@@ -73,7 +92,7 @@ export function loadPersona(paths: PersonaPaths): PersonaView {
     if (problems.length) warnings.push(`個人設定に問題があるため使っていません：${problems.map((p) => p.message).join(' ')}`);
     else overrides = diffPersona(base, parsed.sections);
   }
-  return { base, baseSource, overrides, effective: mergePersona(base, overrides), systemRules: SYSTEM_RULES, warnings };
+  return { base, baseSource, overrides, effective: mergePersona(base, overrides), systemRules: SYSTEM_RULES, warnings, localPath: paths.local };
 }
 
 /** 次の会話で使う指示文と挨拶 */

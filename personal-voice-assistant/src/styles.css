@@ -2137,3 +2137,146 @@ input[type='range']::-moz-range-thumb {
   color: var(--gold);
   font-size: 0.84rem;
 }
+
+/* ---------- MEMORY（長期記憶の管理） ---------- */
+.mp {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.mp p {
+  margin: 0;
+  line-height: 1.6;
+}
+.mp-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mp-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.mp-filter-row .pp-input {
+  width: auto;
+  flex: 1 1 120px;
+}
+.mp-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mp-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--gold-dark);
+  border-radius: 3px;
+  background: rgba(20, 22, 28, 0.85);
+}
+.mp-item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  cursor: default;
+}
+.mp-item details summary {
+  cursor: pointer;
+  list-style: none;
+}
+.mp-item details summary::-webkit-details-marker {
+  display: none;
+}
+.mp-content {
+  font-size: 0.86rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mp-cat {
+  width: auto;
+}
+.mp-msgs {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+.mp-msg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+}
+.mp-who {
+  min-width: 3.4em;
+  color: var(--sub);
+  font-size: 0.74rem;
+}
+.mp-msg.is-assistant .mp-who {
+  color: var(--gold);
+}
+.mp-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.mp-h {
+  margin: 0;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--gold);
+  letter-spacing: 0.06em;
+}
+.mp-path {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 0.76rem;
+  word-break: break-all;
+  padding: 6px 8px;
+  background: #0d0e12;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+.mp-add summary {
+  cursor: pointer;
+  font-size: 0.84rem;
+  color: var(--sub);
+}
+.mp-add[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* タブが 5 つになったため、折り返さずに詰める（狭い画面では横にスクロール） */
+.sd-tabs {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  min-width: 0;
+}
+.sd-tabs::-webkit-scrollbar {
+  display: none;
+}
+.sd-tabs button {
+  white-space: nowrap;
+  padding: 7px 10px;
+  flex: 0 0 auto;
+}
+.sd-head {
+  gap: 8px;
+}

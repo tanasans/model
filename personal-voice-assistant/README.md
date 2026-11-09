@@ -432,7 +432,7 @@ npm run setup:wake
 
 ### 1. Node.js の確認
 
-PowerShell を開き、次を実行します。`v20.19` 以上（推奨 v22 LTS 以上）が表示されれば OK です。
+PowerShell を開き、次を実行します。`v20.19` 以上が表示されれば動きます。**長期記憶（MEMORY）を使うには `v22.13` 以上（推奨 v24 LTS）が必要です**（それより古い場合、記憶機能だけが無効になり、ほかの機能は使えます）。
 
 ```powershell
 node -v
@@ -491,6 +491,78 @@ npm run setup:wake  # 音声呼びかけ用の認識モデルを取得（初回�
 npm run build       # 型チェック + 本番ビルド（dist/client）
 npm start           # ビルド済み画面をサーバーから配信 → http://localhost:8787
 ```
+
+## 長期記憶（MEMORY・v1）
+
+KAITO がアプリを終了しても忘れない記憶です。データはこのパソコンの中だけに保存し、GitHub には含めません。
+
+### 保存されるもの
+
+| 種類 | 内容 | 保存のきっかけ |
+| --- | --- | --- |
+| 会話履歴 | 会話ID、開始・終了日時、あなたの発言・KAITO の回答（確定した文字起こしだけ）、発言順序、文字起こしの状態（確定／失敗／途中で中断） | 会話するたび（設定で ON/OFF。既定は ON） |
+| 長期記憶 | 記憶ID、内容、分類（好み・決定事項・予定・その他）、作成・更新日時、情報源の会話ID、有効／削除の状態 | あなたが「覚えておいて」などと頼んだとき、または MEMORY 画面で手入力したとき |
+
+- 音声ファイルは保存しません。文字起こしの途中経過は保存せず、取得できなかった発言は「文字起こし失敗」として内容を空のまま残します（推測で補いません）。
+- **あなたの発言が 1 回も確定しなかった会話（拍手・キーボードの誤起動など）は、会話履歴にも記憶にも残しません。** 記憶の保存（save_memory）も、その会話であなたの発言が確定していて、「覚えて」「メモして」などの依頼があった場合だけ実行します。
+- 会話全体からの自動的な記憶づくりは v1 では行いません（設定項目のみ用意。次期版）。
+- 健康・お金に関する内容は、保存してよいか KAITO が確認し、了承した場合だけ「機微」の印を付けて保存します。パスワード・API キーなどは保存しません。
+
+### 保存先
+
+| OS | 場所 |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\KAITO\kaito-memory.sqlite`（例：`C:\Users\名前\AppData\Local\KAITO`） |
+| macOS | `~/Library/Application Support/KAITO/` |
+| Linux | `$XDG_DATA_HOME/kaito/`（未設定なら `~/.local/share/kaito/`） |
+
+- アプリのフォルダの外なので、**新しい ZIP を展開し直しても記憶は消えません**。場所は MEMORY →「設定・バックアップ」で確認できます。`.env` の `KAITO_DATA_DIR` で変更できます。
+- KAITO 設定の個人設定（`KAITO.local.md`）も同じ場所に移しました。以前の版の `local/KAITO.local.md` は、初回起動時に自動でコピーします（元のファイルは消しません）。
+- 既存のデータベースは上書きしません。壊れていた場合は `kaito-memory.corrupt-日時.sqlite` という名前で残してから新しく作ります。新しい版の KAITO で作られたデータを古い版で開いた場合は、データを守るため記憶機能を無効にします。
+
+### 音声での使い方（Realtime API の Function Calling）
+
+| 話しかけ方の例 | KAITO の動作 |
+| --- | --- |
+| 「これを覚えといて」 | `save_memory` で保存（同じ内容があれば保存しない） |
+| 「昨日話したことを教えて」 | `search_memory` で前日の会話履歴を検索 |
+| 「前に決めた開発予定は？」 | `search_memory` で決定事項を検索 |
+| 「その予定は変更になった」 | 対象を検索 → どれを直すか確認 → `update_memory` |
+| 「その話は忘れて」 | 対象を検索 → 「消してええ？」と確認 → `delete_memory` |
+
+見つからないときは「確認できません」と答え、覚えているふりはしません。会話の最初に渡すのは、KAITO.md の設定・現在の日時・保存済みの「好み」（最大5件、機微な情報を除く）だけです。それ以外は必要なときだけ検索し、検索結果も最大 10 件・20 発言に絞って渡します（全履歴を毎回 OpenAI に送ることはありません）。待機中は何も送りません。
+
+### 記憶管理画面（設定 →「MEMORY」）
+
+- 長期記憶：一覧、キーワード・日付・分類での検索、編集、個別削除、全件削除、手入力での追加
+- 会話履歴：一覧（開始日時・起動方法・発言数）、発言の表示、キーワード・日付検索、個別削除、全件削除
+- 設定・バックアップ：会話履歴の保存 ON/OFF、「好み」を渡すかどうか、保存先、JSON のバックアップ・復元
+
+削除した記憶は、内容をデータベースから消し「削除済み」の印だけを残します。検索・AI への提供・バックアップには再登場しません。全件削除は行ごと消します。
+
+### バックアップと復元
+
+1. MEMORY →「設定・バックアップ」→「バックアップを保存」で `kaito-memory-backup-日付.json` をダウンロードします。
+2. 復元は「バックアップから復元」でファイルを選びます。
+   - **追加**：今の記憶を残し、無いものだけ追加します（同じ ID・同じ内容は追加しません。何度復元しても増えません）。
+   - **入れ替え**：今の記憶と会話履歴を置き換えます。入れ替える前の内容は、保存先の `backups` フォルダへ自動で書き出します。
+3. **バックアップファイルには、その時点の記憶と会話履歴がそのまま入ります。** KAITO 上で後から削除しても、作成済みのファイルの中には残ります。不要になったファイル（`backups` フォルダ内も含む）は自分で削除してください。
+
+### データベースの構造（SQLite・データ形式 v1）
+
+```
+sessions  (id TEXT PK, started_at INTEGER, ended_at INTEGER, trigger TEXT['manual'|'clap'|'wake'])
+messages  (id INTEGER PK, session_id TEXT → sessions.id ON DELETE CASCADE, item_id TEXT, seq INTEGER,
+           role TEXT['user'|'assistant'], text TEXT NULL, status TEXT['final'|'failed'|'interrupted'],
+           created_at INTEGER, UNIQUE(session_id, item_id))
+memories  (id TEXT PK, content TEXT, norm TEXT（重複判定用）, category TEXT['preference'|'decision'|'schedule'|'other'],
+           created_at, updated_at, source_session_id TEXT NULL, status TEXT['active'|'deleted'], deleted_at,
+           sensitive INTEGER, origin TEXT['voice'|'manual'|'import'])
+settings  (key TEXT PK, value TEXT)   … history_enabled / include_preferences
+PRAGMA user_version = 1（データ形式の版。将来の移行に使う）
+```
+
+Node.js 組み込みの `node:sqlite` を使うため、追加のインストールやビルドツールは不要です（Node.js 22.13 以上）。
 
 ## 想定料金と API 課金の注意（必ずお読みください）
 

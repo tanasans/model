@@ -1,9 +1,10 @@
 import type { ReactNode } from 'react';
 
-export type DrawerTab = 'voice' | 'persona' | 'detail' | 'diag';
+export type DrawerTab = 'voice' | 'persona' | 'memory' | 'detail' | 'diag';
 const TABS: Array<[DrawerTab, string]> = [
   ['voice', '音声'],
   ['persona', 'KAITO設定'],
+  ['memory', 'MEMORY'],
   ['detail', '詳細設定'],
   ['diag', '診断・履歴'],
 ];

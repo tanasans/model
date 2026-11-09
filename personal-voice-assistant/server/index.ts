@@ -14,7 +14,11 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { previewVoice, PreviewError } from './voicePreview.js';
 import { runTool } from './tools/registry.js';
 import { buildRealtimeSession } from './sessionConfig.js';
-import { defaultPersonaPaths, importPersona, loadPersona, PersonaError, resetPersona, savePersona, sessionPersona } from './persona.js';
+import { defaultPersonaPaths, importPersona, loadPersona, migrateLegacyPersona, PersonaError, resetPersona, savePersona, sessionPersona } from './persona.js';
+import { isInsideApp, resolveDataDir } from './memory/dataDir.js';
+import { DB_FILE, openMemoryStore } from './memory/store.js';
+import { memoryRouter, type MemoryHolder } from './memory/routes.js';
+import { buildMemoryInstructions } from '../shared/memory.js';
 import { isPersonaKey, type PersonaOverrides } from '../shared/persona.js';
 import OpenAI from 'openai';
 import {
@@ -74,8 +78,32 @@ const MIN_CREATE_INTERVAL_MS = 3_000;
 /** クライアントが終了を通知しなかった場合でもリースを解放するまでの猶予 */
 const LEASE_GRACE_MS = 15_000;
 
-/** KAITO.md（基本設定）と local/KAITO.local.md（個人設定・Git 管理外）の場所 */
-const PERSONA_PATHS = defaultPersonaPaths(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
+const APP_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+/** 記憶・個人設定の保存先（ユーザー専用のローカル領域。ZIP を展開し直しても消えない。GitHub に含まれない） */
+const DATA_DIR = resolveDataDir();
+/** KAITO.md（基本設定）と KAITO.local.md（個人設定・データ領域）の場所 */
+const PERSONA_PATHS = defaultPersonaPaths(APP_DIR, DATA_DIR);
+const personaMigrated = migrateLegacyPersona(APP_DIR, PERSONA_PATHS);
+
+// 長期記憶（SQLite）。開けなくてもアプリのほかの機能は動かす
+const memory: MemoryHolder = await (async () => {
+  const r = await openMemoryStore(DATA_DIR);
+  const warnings = [...r.warnings];
+  if (isInsideApp(DATA_DIR, APP_DIR)) warnings.push('保存先がアプリのフォルダの中にあります。新しい ZIP に入れ替えると記憶が消える可能性があります（KAITO_DATA_DIR を確認してください）。');
+  return { store: r.store, error: r.error, warnings, dataDir: DATA_DIR, dbPath: path.join(DATA_DIR, DB_FILE) };
+})();
+
+/** 会話の指示文に加える「長期記憶」の部分（その時点の日時と、保存済みの好みだけ。全履歴は送らない） */
+function memoryInstructions(): string {
+  const s = memory.store;
+  let preferences: Array<{ content: string }> = [];
+  try {
+    if (s && s.getSettings().includePreferences) preferences = s.startPreferences();
+  } catch {
+    preferences = [];
+  }
+  return buildMemoryInstructions({ available: Boolean(s), now: new Date(), preferences });
+}
 
 const API_KEY = (process.env.OPENAI_API_KEY ?? '').trim();
 const openai = API_KEY ? new OpenAI({ apiKey: API_KEY, maxRetries: 1, timeout: 15_000 }) : null;
@@ -289,6 +317,21 @@ app.post('/api/persona/reset', requireLocalOrigin, express.json({ limit: '2kb' }
   }
 });
 
+// ---------- 長期記憶（ローカルの SQLite。OpenAI には接続しない） ----------
+function memoryGuard(req: Request, res: Response, next: NextFunction): void {
+  if (req.method === 'GET') {
+    const origin = req.get('origin');
+    if (origin && !ALLOWED_ORIGINS.has(origin)) {
+      sendError(res, 403, 'FORBIDDEN_ORIGIN', '許可されていない接続元です。');
+      return;
+    }
+    next();
+    return;
+  }
+  requireLocalOrigin(req, res, next);
+}
+app.use('/api/memory', memoryRouter(memory, memoryGuard, log));
+
 app.post('/api/session', requireLocalOrigin, express.json({ limit: '1kb' }), async (req, res) => {
   if (!req.is('application/json')) {
     sendError(res, 400, 'BAD_REQUEST', 'Content-Type が不正です。');
@@ -322,7 +365,9 @@ app.post('/api/session', requireLocalOrigin, express.json({ limit: '1kb' }), asy
   const audio = applyAudioProfile(audioProfile, BASE_AUDIO);
   // KAITO.md と個人設定は会話のたびに読み直す（保存した変更は次の会話から反映）
   const persona = sessionPersona(PERSONA_PATHS);
-  const opts: SecretOptions = { voice, audio, speechSpeed, instructions: persona.instructions };
+  // 長期記憶の決まり・現在の日時・保存済みの好み（最大 5 件）を加える。待機中には何もしない（OpenAI へも接続しない）
+  const instructions = `${persona.instructions}\n\n${memoryInstructions()}`;
+  const opts: SecretOptions = { voice, audio, speechSpeed, instructions };
 
   // 発行処理中に別リクエストが来ても 1 件に抑えるため、先にリースを確保する
   const id = randomUUID();
@@ -361,7 +406,7 @@ app.post('/api/session', requireLocalOrigin, express.json({ limit: '1kb' }), asy
       transcriptionModel: TRANSCRIPTION,
       audioProfile,
       speechSpeed,
-      instructions: persona.instructions,
+      instructions,
       greetingInstructions: persona.greetingInstructions,
     };
     log(`client secret issued voice=${voice} audioProfile=${audioProfile} speed=${speechSpeed}`);
@@ -423,6 +468,9 @@ const server = app.listen(PORT, HOST, () => {
   log(`model=${MODEL} voice=${VOICE} maxSessionSeconds=${MAX_SESSION_SECONDS}`);
   log(`turnDetection=${JSON.stringify(TURN_DETECTION)} reasoningEffort=${REASONING_EFFORT ?? 'n/a'}`);
   log(`inputNoiseReduction=${INPUT_NOISE_REDUCTION ?? 'off'} interruptResponse=${INTERRUPT_RESPONSE ?? 'default'} transcription=${TRANSCRIPTION}`);
+  log(`memory: ${memory.store ? `有効（保存先 ${memory.dbPath}）` : `無効：${memory.error}`}`);
+  for (const w of memory.warnings) log(`memory: ${w}`);
+  if (personaMigrated) log(`persona: 以前の個人設定を ${PERSONA_PATHS.local} に引き継ぎました（元のファイルは残しています）`);
 });
 server.on('error', (err) => {
   log(`server error: ${describeError(err)}`);
@@ -431,6 +479,11 @@ server.on('error', (err) => {
 
 function shutdown(): void {
   if (activeLease) releaseLease(activeLease.id, 'shutdown');
+  try {
+    memory.store?.close();
+  } catch {
+    /* 終了時は無視 */
+  }
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 2_000).unref();
 }

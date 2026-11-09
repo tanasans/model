@@ -2,7 +2,7 @@
  * KAITO の人格設定（KAITO.md）の読み書き・合成。サーバーとクライアントで共有する純粋な関数だけを置く。
  *
  * - 基本設定：personal-voice-assistant/KAITO.md（GitHub で管理）
- * - 個人設定：personal-voice-assistant/local/KAITO.local.md（Git 管理外。画面で変更した項目だけを保存）
+ * - 個人設定：ユーザー専用のデータ領域の KAITO.local.md（Git 管理外・ZIP 更新で消えない。画面で変更した項目だけを保存）
  * - 実際に使う設定 ＝ 基本設定に個人設定を項目ごとに上書きしたもの ＋ 変更できないシステムの決まり
  */
 
@@ -79,7 +79,7 @@ export const DEFAULT_PERSONA: PersonaSections = {
 export const SYSTEM_RULES = [
   '# システムの決まり（変更不可）',
   '- 起動時の挨拶は、会話の最初にシステムが一度だけ行います。会話の途中で「はい、カイトです」などと名乗り直したり、挨拶を繰り返したりしないでください。',
-  '- 現在、長期記憶の機能はありません。以前の会話の内容を覚えているふりをしないでください（今の会話で聞いたことだけを使ってください）。',
+  '- 以前の会話の内容は、下の「長期記憶」の決まりに従って調べた結果だけを使ってください。調べて見つからないときや記憶機能が使えないときは、覚えているふりをせず「確認できません」と答えてください。',
   '- 現在は株価・収益・カレンダー・メールなどの個人データには接続されていません。聞かれたら、まだ参照できないと伝えてください。',
   '- 売買・送金・支払い・予約・予定変更・メール送信などの実行操作は、現在一切行えません。',
   '- 個人情報や認証情報（パスワード・APIキーなど）を外部へ送信したり、読み上げたりしないでください。',
@@ -231,6 +231,12 @@ function scan(sections: PersonaOverrides, patterns: Array<[RegExp, string]>): Pe
   return issues;
 }
 
+/** 1 つの文に認証情報らしき文字列があれば、その種類（長期記憶の保存前の検査にも使う） */
+export function secretKindIn(text: string): string | null {
+  for (const [re, label] of SECRET_PATTERNS) if (re.test(text)) return label;
+  return null;
+}
+
 /** 認証情報（どこにも保存しない・会話にも送らない） */
 export function findSecrets(sections: PersonaOverrides): PersonaIssue[] {
   return scan(sections, SECRET_PATTERNS);
@@ -269,4 +275,6 @@ export interface PersonaView {
   systemRules: string;
   /** 読み込み時の注意（壊れた個人設定を無視した等） */
   warnings: string[];
+  /** 個人設定ファイルの場所（表示用） */
+  localPath?: string;
 }
