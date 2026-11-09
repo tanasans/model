@@ -49,7 +49,7 @@ function loadSettings(): WakeSettings {
 export interface WakeControllerOptions {
   paused: boolean;
   testMode: boolean;
-  onWakeStart: () => Promise<void>;
+  onWakeStart: (d: WakeDecision) => Promise<void>;
 }
 
 export function useWakeController({ paused, testMode, onWakeStart }: WakeControllerOptions) {
@@ -67,14 +67,14 @@ export function useWakeController({ paused, testMode, onWakeStart }: WakeControl
   }, [settings]);
 
   const onWake = useCallback(
-    (_d: WakeDecision) => {
+    (d: WakeDecision) => {
       if (testMode) {
         // テストモード：会話は開始せず、回数だけ数える（API 料金なし）
         setTestCount((n) => n + 1);
         void playChime();
         return;
       }
-      void onWakeStart();
+      void onWakeStart(d);
     },
     [onWakeStart, testMode],
   );

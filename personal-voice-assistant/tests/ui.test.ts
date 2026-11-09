@@ -40,7 +40,16 @@ test('会話中・起動中は ACTIVE、接続処理中だけ connecting', () =>
   assert.equal(v({ phase: 'connected' }).state, 'ACTIVE');
   assert.equal(v({ phase: 'connected' }).connecting, false);
   assert.equal(v({ phase: 'connecting' }).connecting, true);
-  assert.equal(v({ triggering: true }).sub, '起動');
+  assert.equal(v({ triggering: true }).sub, '接続中');
+});
+
+test('起動の段階：認識しました → 接続中 → 応答中（挨拶）→ 会話できます', () => {
+  assert.deepEqual([v({ triggering: true, recognized: true }).stage, v({ triggering: true, recognized: true }).sub], ['recognized', '認識しました']);
+  assert.deepEqual([v({ phase: 'fetching-token', recognized: false }).stage, v({ phase: 'connecting' }).sub], ['connecting', '接続中']);
+  assert.deepEqual([v({ phase: 'connected', ready: false }).stage, v({ phase: 'connected', ready: false }).sub], ['greeting', '応答中']);
+  assert.deepEqual([v({ phase: 'connected', ready: true }).stage, v({ phase: 'connected', ready: true }).sub], ['ready', '会話できます']);
+  assert.equal(v({ phase: 'connected', ready: true }).connecting, false);
+  assert.equal(v({}).stage, null);
   assert.equal(v({ phase: 'connected', voiceError: 'x' }).state, 'ACTIVE');
 });
 

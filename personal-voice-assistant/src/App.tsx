@@ -22,6 +22,9 @@ import { createMemoryTools } from './memory/memoryTools';
 import { usePersona } from './persona/usePersona';
 import { TacticalBackdrop } from './ui/TacticalBackdrop';
 import { useVoiceSession } from './useVoiceSession';
+import { LatencyTrace, loadLatency, saveLatency, LATENCY_MAX, type LatencyRecord } from './latency/latencyTrace';
+import { LocalGreetingPlayer } from './voice/localGreeting';
+import type { WakeDecision } from './wake/wakePolicy';
 import { createKaitoTools, createWeatherActions } from './tools/kaitoTools';
 import { ForecastStore } from './tools/forecastStore';
 import { useVoiceSettings } from './voice/useVoiceSettings';
@@ -29,6 +32,8 @@ import { useConversationSettings } from './voice/conversationSettings';
 import { useWakeController } from './wake/useWakeController';
 
 const UI_KEY = 'pva.ui.v1';
+/** 起動音の長さ（ms）。この間は会話用マイクの音を送らない */
+const CHIME_MS = 450;
 function loadLowMotion(): boolean {
   try {
     return (JSON.parse(localStorage.getItem(UI_KEY) ?? '{}') as { lowMotion?: boolean }).lowMotion === true;
@@ -50,12 +55,51 @@ export function App() {
   const endByVoiceRef = useRef<(o: { stopStandby: boolean }) => boolean>(() => false);
   // 会話の記録（確定した文字起こしだけをローカルの記憶データベースへ。誤起動で発言がない会話は保存しない）
   const loggerRef = useRef<ConversationLogger | null>(null);
+  // 応答時間の記録（数値のみ・このブラウザ内）
+  const [latency, setLatency] = useState<LatencyRecord[]>(loadLatency);
+  const addLatency = useCallback((r: LatencyRecord) => {
+    setLatency((l) => {
+      const next = [r, ...l].slice(0, LATENCY_MAX);
+      saveLatency(next);
+      return next;
+    });
+    if (import.meta.env.DEV) (window as unknown as { __kaitoLatency?: { last: unknown } }).__kaitoLatency = { last: r };
+  }, []);
+  // 記憶検索の計測：ユーザーの発言の終わり → ツール要求 → 結果を返す → 回答音声
+  const lastSpeechStopRef = useRef<number | null>(null);
+  const memTraceRef = useRef<LatencyTrace | null>(null);
+  const onMemoryCall = useCallback(
+    (e: { tool: string; phase: 'start' | 'end'; serverMs?: number }) => {
+      if (e.phase === 'start') {
+        memTraceRef.current?.finish();
+        const t = new LatencyTrace('memory', addLatency);
+        if (lastSpeechStopRef.current !== null) t.mark('speechEnd', lastSpeechStopRef.current);
+        t.mark('toolRequested');
+        t.note(e.tool);
+        memTraceRef.current = t;
+        window.setTimeout(() => t.finish(), 20_000);
+      } else {
+        const t = memTraceRef.current;
+        t?.mark('toolReturned');
+        if (e.serverMs !== undefined) t?.value('sqliteMs', e.serverMs);
+      }
+    },
+    [addLatency],
+  );
   const observer = useMemo(
     () => ({
       onStart: (trigger: 'manual' | 'clap' | 'wake', startedAt: number) => {
         loggerRef.current = new ConversationLogger(trigger, startedAt);
       },
-      onEvent: (ev: { type?: string; [k: string]: unknown }) => loggerRef.current?.handleEvent(ev),
+      onEvent: (ev: { type?: string; [k: string]: unknown }) => {
+        loggerRef.current?.handleEvent(ev);
+        if (ev.type === 'input_audio_buffer.speech_stopped') lastSpeechStopRef.current = performance.now();
+        if (ev.type === 'output_audio_buffer.started' && memTraceRef.current?.has('toolReturned')) {
+          memTraceRef.current.mark('serverAudio');
+          memTraceRef.current.finish();
+          memTraceRef.current = null;
+        }
+      },
       onEnd: () => {
         const l = loggerRef.current;
         loggerRef.current = null;
@@ -72,15 +116,30 @@ export function App() {
           const l = loggerRef.current;
           return l ? { sessionId: l.sessionId, userFinalCount: l.recorder.userFinalCount, recentUserTexts: l.recorder.recentUserTexts() } : null;
         },
+        onCall: (e) => onMemoryCallRef.current(e),
       }),
     ],
     [],
   );
+  const onMemoryCallRef = useRef(onMemoryCall);
+  onMemoryCallRef.current = onMemoryCall;
   const voice = useVoiceSession({ getTools, observer });
   const { phase, start, stop } = voice;
   const voiceSettings = useVoiceSettings();
   const conversation = useConversationSettings();
   const [server, setServer] = useState<ServerView>({ kind: 'checking' });
+  // ローカル挨拶の音声（作成済みなら読み込んでおく。ローカルサーバーからの読み込みだけで、OpenAI には接続しない）
+  const greetingRef = useRef(new LocalGreetingPlayer());
+  const [greetingInfo, setGreetingInfo] = useState(greetingRef.current.info);
+  const greetingVoice = voiceSettings.chosen ?? (server.kind === 'up' ? server.defaultVoice : null);
+  const reloadGreeting = useCallback(async () => {
+    if (!greetingVoice) return;
+    await greetingRef.current.load({ voice: greetingVoice, speed: conversation.settings.speechSpeed });
+    setGreetingInfo(greetingRef.current.info);
+  }, [greetingVoice, conversation.settings.speechSpeed]);
+  useEffect(() => {
+    void reloadGreeting();
+  }, [reloadGreeting]);
   const [testMode, setTestMode] = useState(false);
   const [drawer, setDrawer] = useState<DrawerTab | null>(null);
   // KAITO 設定は「KAITO設定」タブを開いたときだけ読み込む（待機中に無駄な処理をしない。OpenAI には接続しない）
@@ -106,30 +165,63 @@ export function App() {
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
   // 次の会話で使う声・音声調整（保存済みの設定。会話中に変えても次の会話から適用）
-  const startOptsRef = useRef({ voice: voiceSettings.chosen, ...conversation.settings });
-  startOptsRef.current = { voice: voiceSettings.chosen, ...conversation.settings };
+  const pickStartOpts = () => ({ voice: voiceSettings.chosen, audioProfile: conversation.settings.audioProfile, speechSpeed: conversation.settings.speechSpeed });
+  const startOptsRef = useRef(pickStartOpts());
+  startOptsRef.current = pickStartOpts();
+  const useLocalGreetingRef = useRef(conversation.settings.localGreeting);
+  useLocalGreetingRef.current = conversation.settings.localGreeting;
+  /** 起動時の共通オプション（計測・ローカル挨拶） */
+  const startExtras = useCallback(
+    (trace: LatencyTrace) => ({
+      trace,
+      ...(useLocalGreetingRef.current ? { localGreeting: (g: { text: string; voice: string; speed: number }) => greetingRef.current.play(g) } : {}),
+    }),
+    [],
+  );
   const triggerStart = useCallback(
-    async (source: 'clap' | 'wake') => {
+    async (source: 'clap' | 'wake', d?: WakeDecision) => {
       if (phaseRef.current !== 'idle') return;
+      const trace = new LatencyTrace(source, addLatency);
+      if (d?.timing) {
+        trace.mark('speechEnd', d.timing.speechEndAt);
+        trace.mark('recognized', d.timing.recognizedAt);
+      }
       await gateRef.current.run(async () => {
+        // 認識した瞬間に、起動音と画面の発光で知らせる（OpenAI への接続完了を待たない）
+        trace.mark('trigger');
         setTriggering(true); // ここで拍手・音声の待機を止め、マイクを解放する
+        setRecognizedAt(Date.now());
+        void playChime(); // 鳴り終わりを待たずに接続の準備を始める
         try {
-          await playChime();
-          await start({ trigger: source, ...startOptsRef.current });
+          // 起動音（約 0.4 秒）がマイクに回り込まないよう、その間は会話用マイクの音を送らない
+          await start({ trigger: source, ...startOptsRef.current, ...startExtras(trace), muteMicUntil: performance.now() + CHIME_MS });
         } finally {
           setTriggering(false);
         }
       });
     },
-    [start],
+    [start, startExtras, addLatency],
   );
   const onManualStart = useCallback(() => {
     setBurstKey((k) => k + 1);
-    void gateRef.current.run(() => start({ ...startOptsRef.current }));
-  }, [start]);
+    const trace = new LatencyTrace('manual', addLatency);
+    trace.mark('trigger');
+    void gateRef.current.run(async () => {
+      await start({ ...startOptsRef.current, ...startExtras(trace) });
+    });
+  }, [start, startExtras, addLatency]);
+  // 「認識しました」の表示（起動処理の開始から約 0.9 秒。その後は「接続中」）
+  const [recognizedAt, setRecognizedAt] = useState(0);
+  const [recognized, setRecognized] = useState(false);
+  useEffect(() => {
+    if (!recognizedAt) return;
+    setRecognized(true);
+    const t = window.setTimeout(() => setRecognized(false), 900);
+    return () => window.clearTimeout(t);
+  }, [recognizedAt]);
 
   const standbyPaused = phase !== 'idle' || triggering;
-  const wake = useWakeController({ paused: standbyPaused, testMode, onWakeStart: () => triggerStart('wake') });
+  const wake = useWakeController({ paused: standbyPaused, testMode, onWakeStart: (d) => triggerStart('wake', d) });
   const clap = useClapController({ paused: standbyPaused, testMode, onClapStart: () => triggerStart('clap') });
   endByVoiceRef.current = ({ stopStandby }) => {
     const ok = voice.endAfterReply();
@@ -183,6 +275,8 @@ export function App() {
     server: server.kind,
     apiKeyConfigured: server.kind === 'up' ? server.apiKeyConfigured : null,
     voiceError: voice.error,
+    recognized,
+    ready: voice.ready,
     wake: { on: wake.on, status: wake.status, error: wake.wake.error },
     clap: { on: clap.standbyOn, status: clap.status, error: clap.standby.error },
   });
@@ -242,7 +336,7 @@ export function App() {
       />
       <SideDrawer tab={drawer} onTab={setDrawer} onClose={() => setDrawer(null)} alert={errors.length > 0}>
         {drawer === 'voice' && (
-          <VoicePanel vs={voiceSettings} conv={conversation} defaultVoice={server.kind === 'up' ? server.defaultVoice : null} apiKeyConfigured={apiKeyConfigured} busy={phase !== 'idle' || triggering} />
+          <VoicePanel vs={voiceSettings} conv={conversation} greeting={{ info: greetingInfo, voice: greetingVoice, reload: reloadGreeting }} defaultVoice={server.kind === 'up' ? server.defaultVoice : null} apiKeyConfigured={apiKeyConfigured} busy={phase !== 'idle' || triggering} />
         )}
         {drawer === 'persona' && <PersonaPanel p={persona} />}
         {drawer === 'memory' && <MemoryPanel m={memory} busy={phase !== 'idle'} />}
@@ -262,7 +356,10 @@ export function App() {
             readMicDb={readMicDb}
           />
         )}
-        {drawer === 'diag' && <InfoPanel wake={wake} clap={clap} lines={voice.lines} connected={phase === 'connected'} errors={errors} notice={voice.notice} />}
+        {drawer === 'diag' && <InfoPanel wake={wake} clap={clap} lines={voice.lines} connected={phase === 'connected'} errors={errors} notice={voice.notice} latency={latency} onClearLatency={() => {
+              setLatency([]);
+              saveLatency([]);
+            }} />}
       </SideDrawer>
       {calibOpen && <CalibrationModal clap={clap} onClose={() => setCalibOpen(false)} onManual={() => setDrawer('detail')} />}
     </div>

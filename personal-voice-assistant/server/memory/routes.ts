@@ -207,7 +207,10 @@ export function memoryRouter(h: MemoryHolder, guard: (req: Request, res: Respons
     toolCalls.push(now);
     const args = (req.body?.args ?? {}) as Record<string, unknown>;
     const sessionId = typeof req.body?.sessionId === 'string' ? req.body.sessionId : null;
+    const t = performance.now();
     const out = runMemoryTool(h.store, name, args, { sessionId, now: new Date() });
+    // 計測用：サーバー内の処理時間（SQLite の検索など）。AI には渡さない（ヘッダーのみ）
+    res.setHeader('X-Memory-Ms', (performance.now() - t).toFixed(2));
     log(`memory tool ${name} ${out.ok ? 'ok' : 'refused'}`);
     res.json(out);
   });

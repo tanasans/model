@@ -97,6 +97,8 @@ export interface WakeDecision {
   end: number;
   checks: WakeCheck[];
   reason?: string;
+  /** 応答時間の計測用（performance.now() の時刻）。言葉の終わり（推定）と認識確定 */
+  timing?: { speechEndAt: number; recognizedAt: number };
 }
 
 const FAIL_TEXT: Record<WakeCheck['key'], string> = {

@@ -14,6 +14,10 @@ export interface CoreInputs {
   server: 'checking' | 'down' | 'up';
   apiKeyConfigured: boolean | null;
   voiceError: string | null;
+  /** 呼びかけ・拍手を認識した直後（約 1 秒）。接続の完了を待たずに知らせる */
+  recognized?: boolean;
+  /** 会話可能（接続済みで挨拶も終わり、マイクの音を送っている） */
+  ready?: boolean;
   wake: { on: boolean; status: WakeStatus; error: string | null };
   clap: { on: boolean; status: StandbyStatus; error: string | null };
 }
@@ -26,6 +30,8 @@ export interface CoreView {
   notice: string | null;
   /** 接続処理中（外周を小さな光が移動） */
   connecting: boolean;
+  /** 起動の段階（認識しました → 接続中 → 挨拶 → 会話できます）。画面の発光を切り替える */
+  stage: 'recognized' | 'connecting' | 'greeting' | 'ready' | null;
 }
 
 const PHASE_SUB: Record<Phase, string> = {
@@ -39,12 +45,12 @@ const PHASE_SUB: Record<Phase, string> = {
 
 export function deriveCoreView(i: CoreInputs): CoreView {
   if (i.triggering || i.phase !== 'idle') {
-    return {
-      state: 'ACTIVE',
-      sub: i.triggering && i.phase === 'idle' ? '起動' : PHASE_SUB[i.phase],
-      notice: null,
-      connecting: i.phase !== 'connected' && i.phase !== 'stopping',
-    };
+    const connecting = i.phase !== 'connected' && i.phase !== 'stopping';
+    const stage: CoreView['stage'] =
+      i.phase === 'stopping' ? null : i.phase === 'connected' ? (i.ready ? 'ready' : 'greeting') : i.recognized ? 'recognized' : 'connecting';
+    const sub =
+      stage === 'recognized' ? '認識しました' : stage === 'connecting' ? '接続中' : stage === 'greeting' ? '応答中' : stage === 'ready' ? '会話できます' : PHASE_SUB[i.phase];
+    return { state: 'ACTIVE', sub, notice: null, connecting, stage };
   }
 
   const wakeErr = i.wake.on && (i.wake.status === 'error' || i.wake.status === 'not-installed');
@@ -61,7 +67,7 @@ export function deriveCoreView(i: CoreInputs): CoreView {
   const wakeListening = i.wake.on && i.wake.status === 'listening';
   const clapListening = i.clap.on && (i.clap.status === 'listening' || i.clap.status === 'first-clap');
   if (wakeListening || clapListening) {
-    return { state: 'LISTENING', sub: i.clap.status === 'first-clap' ? '拍手 1' : '', notice: null, connecting: false };
+    return { state: 'LISTENING', sub: i.clap.status === 'first-clap' ? '拍手 1' : '', notice: null, connecting: false, stage: null };
   }
 
   const loading = i.wake.on && (i.wake.status === 'checking' || i.wake.status === 'loading');
@@ -71,11 +77,12 @@ export function deriveCoreView(i: CoreInputs): CoreView {
     sub: loading ? 'モデル読込' : starting ? '準備中' : '',
     notice: i.apiKeyConfigured === false ? 'APIキー未設定' : null,
     connecting: false,
+    stage: null,
   };
 }
 
 function err(sub: string, notice: string | null): CoreView {
-  return { state: 'ERROR', sub, notice, connecting: false };
+  return { state: 'ERROR', sub, notice, connecting: false, stage: null };
 }
 
 /** 長いエラー文は最初の文だけにする */

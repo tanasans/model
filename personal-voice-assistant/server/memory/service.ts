@@ -34,7 +34,7 @@ function forModel(m: MemoryRecord) {
     content: m.content,
     category: CATEGORY_LABEL[m.category],
     saved: formatLocal(m.createdAt),
-    updated: formatLocal(m.updatedAt),
+    ...(m.updatedAt !== m.createdAt ? { updated: formatLocal(m.updatedAt) } : {}),
     ...(m.sensitive ? { sensitive: true } : {}),
   };
 }
@@ -92,26 +92,19 @@ function search(store: MemoryStore, a: Record<string, unknown>, ctx: { now: Date
   if ((a.date_from && range.from === null) || (a.date_to && range.to === null)) {
     return { ok: false, error: '日付は today / yesterday / YYYY-MM-DD で指定してください。' };
   }
-  const findMemories = (minScore: number) =>
-    target === 'history' ? [] : store.searchMemories({ query, category, from: range.from, to: range.to, limit: MEMORY_LIMITS.toolMemories, minScore }).map(forModel);
-  const findHistory = (minScore: number) =>
-    target === 'memories'
-      ? []
-      : store.searchMessages({ query, from: range.from, to: range.to, limit: MEMORY_LIMITS.toolMessages, minScore }).map((h) => ({
-          when: formatLocal(h.sessionStartedAt),
-          speaker: h.role === 'user' ? 'ユーザー' : 'KAITO',
-          text: (h.text ?? '').slice(0, MEMORY_LIMITS.toolSnippetChars),
-          ...(h.status !== 'final' ? { note: TRANSCRIPT_STATUS_LABEL[h.status] } : {}),
-        }));
-  let memories = findMemories(0.5);
-  let history = findHistory(0.5);
-  // 見つからなければ一致度を緩めて探し直す（「開発予定」で「次の開発は…」を見つける等）
-  let relaxed = false;
-  if (query && memories.length + history.length === 0) {
-    memories = findMemories(0.3);
-    history = findHistory(0.3);
-    relaxed = memories.length + history.length > 0;
-  }
+  // 一度の検索で採点し（一致度 0.3 以上）、0.5 以上があればそれだけを、無ければ緩めた結果を使う
+  const memHits = target === 'history' ? [] : store.searchMemories({ query, category, from: range.from, to: range.to, limit: 50, minScore: 0.3 });
+  const msgHits = target === 'memories' ? [] : store.searchMessages({ query, from: range.from, to: range.to, limit: 100, minScore: 0.3 });
+  const strictMem = memHits.filter((m) => m.score >= 0.5);
+  const strictMsg = msgHits.filter((m) => m.score >= 0.5);
+  const relaxed = Boolean(query) && strictMem.length + strictMsg.length === 0 && memHits.length + msgHits.length > 0;
+  const memories = (relaxed ? memHits : strictMem).slice(0, MEMORY_LIMITS.toolMemories).map(forModel);
+  const history = (relaxed ? msgHits : strictMsg).slice(0, MEMORY_LIMITS.toolMessages).map((h) => ({
+    when: formatLocal(h.sessionStartedAt),
+    speaker: h.role === 'user' ? 'ユーザー' : 'KAITO',
+    text: (h.text ?? '').slice(0, MEMORY_LIMITS.toolSnippetChars),
+    ...(h.status !== 'final' ? { note: TRANSCRIPT_STATUS_LABEL[h.status] } : {}),
+  }));
   const found = memories.length + history.length;
   return {
     ok: true,

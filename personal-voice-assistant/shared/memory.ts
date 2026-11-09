@@ -29,8 +29,8 @@ export const MEMORY_LIMITS = {
   messageChars: 4000,
   /** AI に渡す検索結果の上限（トークンと個人情報の送信を抑える） */
   toolMemories: 10,
-  toolMessages: 20,
-  toolSnippetChars: 200,
+  toolMessages: 12,
+  toolSnippetChars: 160,
   /** 会話開始時に渡す「好み」の上限 */
   startPreferences: 5,
   startPreferenceChars: 600,

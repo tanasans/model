@@ -19,11 +19,14 @@ export const CONVERSATION_SETTINGS_KEY = 'pva.conversation.v1';
 export interface ConversationSettings {
   audioProfile: AudioProfileId;
   speechSpeed: SpeechSpeed;
+  /** 起動時の挨拶を、作成済みのローカル音声で再生する（音声を作成していなければ従来どおり） */
+  localGreeting: boolean;
 }
 
 export const DEFAULT_CONVERSATION_SETTINGS: ConversationSettings = {
   audioProfile: DEFAULT_AUDIO_PROFILE,
   speechSpeed: DEFAULT_SPEECH_SPEED,
+  localGreeting: true,
 };
 
 type KV = Pick<Storage, 'getItem' | 'setItem'>;
@@ -44,6 +47,7 @@ export function loadConversationSettings(store: KV | null = storage()): Conversa
     return {
       audioProfile: isAudioProfileId(v?.audioProfile) ? v.audioProfile : DEFAULT_AUDIO_PROFILE,
       speechSpeed: isSpeechSpeed(v?.speechSpeed) ? v.speechSpeed : DEFAULT_SPEECH_SPEED,
+      localGreeting: v?.localGreeting !== false,
     };
   } catch {
     return { ...DEFAULT_CONVERSATION_SETTINGS };
@@ -52,7 +56,7 @@ export function loadConversationSettings(store: KV | null = storage()): Conversa
 
 export function saveConversationSettings(s: ConversationSettings, store: KV | null = storage()): void {
   try {
-    store?.setItem(CONVERSATION_SETTINGS_KEY, JSON.stringify({ audioProfile: s.audioProfile, speechSpeed: s.speechSpeed }));
+    store?.setItem(CONVERSATION_SETTINGS_KEY, JSON.stringify({ audioProfile: s.audioProfile, speechSpeed: s.speechSpeed, localGreeting: s.localGreeting }));
   } catch {
     /* 保存できなくても今回の画面では有効 */
   }

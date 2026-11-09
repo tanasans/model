@@ -2280,3 +2280,67 @@ input[type='range']::-moz-range-thumb {
 .sd-head {
   gap: 8px;
 }
+
+/* --- 起動の段階：認識しました（金の強い発光）→ 接続中（外周の光）→ 応答中 → 会話できます（赤い安定した光） --- */
+.cc-stage-recognized .cc-center {
+  box-shadow: 0 0 0 2px rgba(201, 167, 106, 0.9), 0 0 60px 18px rgba(201, 167, 106, 0.55);
+  animation: ccRecognized 0.9s ease-out;
+}
+.cc-stage-recognized .cc-sub {
+  color: #f6dfa8;
+}
+@keyframes ccRecognized {
+  0% {
+    box-shadow: 0 0 0 2px rgba(255, 236, 190, 1), 0 0 90px 30px rgba(255, 220, 150, 0.85);
+  }
+  100% {
+    box-shadow: 0 0 0 2px rgba(201, 167, 106, 0.6), 0 0 40px 10px rgba(201, 167, 106, 0.3);
+  }
+}
+.cc-stage-connecting .cc-center {
+  box-shadow: 0 0 0 1px rgba(201, 167, 106, 0.6), 0 0 30px 6px rgba(201, 167, 106, 0.25);
+}
+.cc-stage-greeting .cc-center {
+  box-shadow: 0 0 0 1px rgba(224, 69, 93, 0.7), 0 0 34px 8px rgba(224, 69, 93, 0.3);
+}
+.cc-stage-ready .cc-center {
+  box-shadow: 0 0 0 2px rgba(224, 69, 93, 0.95), 0 0 48px 14px rgba(179, 32, 54, 0.55);
+}
+.cc-stage-ready .cc-sub {
+  color: #ffd3da;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cc-stage-recognized .cc-center {
+    animation: none;
+  }
+}
+
+/* 応答時間 */
+.lt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  margin: 6px 0;
+}
+.lt-table th,
+.lt-table td {
+  padding: 3px 4px;
+  border-bottom: 1px solid var(--line);
+  text-align: right;
+}
+.lt-table th:first-child,
+.lt-table td:first-child {
+  text-align: left;
+  color: var(--sub);
+}
+.lt-card .row-actions {
+  margin-top: 6px;
+}
+.vp-greet {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}

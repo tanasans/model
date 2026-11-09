@@ -12,7 +12,7 @@ import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 import {
   isMemoryCategory,
   isNearDuplicate,
-  matchScore,
+  bigrams,
   MEMORY_LIMITS,
   normalizeText,
   type MemoryCategory,
@@ -24,7 +24,10 @@ import {
   type TranscriptStatus,
 } from '../../shared/memory.js';
 
-export const SCHEMA_VERSION = 1;
+/**
+ * データ形式の版。v1：初版。v2：発言の検索用の正規化済み文字列（messages.norm）と、会話の開始日時の索引を追加（検索の高速化）
+ */
+export const SCHEMA_VERSION = 2;
 export const DB_FILE = 'kaito-memory.sqlite';
 
 const SCHEMA_V1 = `
@@ -159,9 +162,10 @@ export async function openMemoryStore(dataDir: string, now = () => Date.now()): 
     if (version < 1) {
       db.exec('BEGIN');
       db.exec(SCHEMA_V1);
-      db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+      db.exec('PRAGMA user_version = 1');
       db.exec('COMMIT');
     }
+    if (version < 2) migrateToV2(db);
     db.exec('PRAGMA journal_mode = WAL');
   } catch (e) {
     try {
@@ -175,6 +179,25 @@ export async function openMemoryStore(dataDir: string, now = () => Date.now()): 
 }
 
 class CorruptError extends Error {}
+
+/** v1 → v2：既存の発言にも検索用の正規化済み文字列を付ける（内容は変えない）。途中で失敗したら元に戻す */
+export function migrateToV2(db: DatabaseSync): void {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const cols = db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === 'norm')) db.exec('ALTER TABLE messages ADD COLUMN norm TEXT');
+    const upd = db.prepare('UPDATE messages SET norm = ? WHERE id = ?');
+    for (const r of db.prepare('SELECT id, text FROM messages WHERE text IS NOT NULL AND norm IS NULL').all() as Array<{ id: number; text: string }>) {
+      upd.run(normalizeText(r.text), r.id);
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at)');
+    db.exec('PRAGMA user_version = 2');
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
 
 function describe(e: unknown): string {
   const m = e instanceof Error ? e.message : String(e);
@@ -354,12 +377,19 @@ export class MemoryStore {
       p.push(i.to);
     }
     if (i.includeSensitive === false) where.push('sensitive = 0');
-    const rows = this.all(`SELECT * FROM memories WHERE ${where.join(' AND ')} ORDER BY updated_at DESC`, ...p).map((r) => this.toMemory(r));
     const q = (i.query ?? '').trim();
     const limit = i.limit ?? 100;
-    if (!q) return rows.slice(0, limit).map((m) => ({ ...m, score: 1 }));
+    const words = queryWords(q);
+    // 検索語の 2 文字の組を 1 つも含まない記憶は、SQLite の中で先に除く（JavaScript での採点を減らす）
+    if (words.length) {
+      const grams = [...new Set(words.flatMap((w) => [...w]))].slice(0, 60);
+      where.push(`(${grams.map(() => 'instr(norm, ?) > 0').join(' OR ')})`);
+      p.push(...grams);
+    }
+    const rows = this.all(`SELECT * FROM memories WHERE ${where.join(' AND ')} ORDER BY updated_at DESC`, ...p);
+    if (!words.length) return rows.slice(0, limit).map((r) => ({ ...this.toMemory(r), score: 1 }));
     return rows
-      .map((m) => ({ ...m, score: keywordScore(q, m.content) }))
+      .map((r) => ({ ...this.toMemory(r), score: scoreNorm(words, String(r.norm)) }))
       .filter((m) => m.score >= (i.minScore ?? 0.5))
       .sort((a, b) => b.score - a.score || b.updatedAt - a.updatedAt)
       .slice(0, limit);
@@ -390,9 +420,9 @@ export class MemoryStore {
     if (!this.sessionExists(sessionId)) throw new MemoryError('NOT_FOUND', '会話が見つかりません。');
     const text = m.status === 'failed' ? null : (m.text ?? '').slice(0, MEMORY_LIMITS.messageChars).trim() || null;
     this.run(
-      `INSERT INTO messages (session_id, item_id, seq, role, text, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(session_id, item_id) DO UPDATE SET text = excluded.text, status = excluded.status`,
-      sessionId, m.itemId, m.seq, m.role, text, text === null ? 'failed' : m.status, this.now(),
+      `INSERT INTO messages (session_id, item_id, seq, role, text, norm, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(session_id, item_id) DO UPDATE SET text = excluded.text, norm = excluded.norm, status = excluded.status`,
+      sessionId, m.itemId, m.seq, m.role, text, text === null ? null : normalizeText(text), text === null ? 'failed' : m.status, this.now(),
     );
   }
 
@@ -431,7 +461,7 @@ export class MemoryStore {
   }
 
   /** 発言の検索（確定した文字起こしだけ）。検索語なしなら、期間内の発言を古い順に */
-  searchMessages(i: { query?: string | null; from?: number | null; to?: number | null; limit?: number; minScore?: number }): MessageHit[] {
+  searchMessages(i: { query?: string | null; from?: number | null; to?: number | null; limit?: number; minScore?: number }): Array<MessageHit & { score: number }> {
     const where = ['m.text IS NOT NULL'];
     const p: SQLInputValue[] = [];
     if (i.from != null) {
@@ -442,19 +472,37 @@ export class MemoryStore {
       where.push('s.started_at < ?');
       p.push(i.to);
     }
-    const rows = this.all(
-      `SELECT m.*, s.started_at AS s_started FROM messages m JOIN sessions s ON s.id = m.session_id WHERE ${where.join(' AND ')} ORDER BY s.started_at DESC, m.seq LIMIT 3000`,
-      ...p,
-    ).map((r) => ({ ...toMessage(r), sessionId: String(r.session_id), sessionStartedAt: Number(r.s_started) }));
     const q = (i.query ?? '').trim();
     const limit = i.limit ?? 50;
-    if (!q) return rows.sort((a, b) => a.sessionStartedAt - b.sessionStartedAt || a.seq - b.seq).slice(-limit);
-    return rows
-      .map((h) => ({ h, s: keywordScore(q, h.text ?? '') }))
-      .filter((x) => x.s >= (i.minScore ?? 0.5))
-      .sort((a, b) => b.s - a.s || b.h.sessionStartedAt - a.h.sessionStartedAt)
-      .slice(0, limit)
-      .map((x) => x.h);
+    const words = queryWords(q);
+    const hit = (r: Row, score: number) => ({ ...toMessage(r), sessionId: String(r.session_id), sessionStartedAt: Number(r.s_started), score });
+    if (!words.length) {
+      // 検索語なし（日付だけ）：期間内の発言を新しい方から limit 件、古い順に並べて返す
+      const rows = this.all(
+        `SELECT m.*, s.started_at AS s_started FROM messages m JOIN sessions s ON s.id = m.session_id WHERE ${where.join(' AND ')} ORDER BY s.started_at DESC, m.seq DESC LIMIT ?`,
+        ...p, limit,
+      );
+      return rows.map((r) => hit(r, 1)).reverse();
+    }
+    // 検索語の 2 文字の組を 1 つも含まない発言は SQLite の中で除く。件数の上限なしで全期間を検索する
+    const grams = [...new Set(words.flatMap((w) => [...w]))].slice(0, 60);
+    where.push(`(${grams.map(() => 'instr(m.norm, ?) > 0').join(' OR ')})`);
+    p.push(...grams);
+    // 1 段目：採点に必要な列だけを読む（本文全体は読まない） → 2 段目：上位だけ本文を読む
+    const light = this.all(`SELECT m.id AS id, m.norm AS norm, m.seq AS seq, s.started_at AS s_started FROM messages m JOIN sessions s ON s.id = m.session_id WHERE ${where.join(' AND ')}`, ...p);
+    const minScore = i.minScore ?? 0.5;
+    const top: Array<{ id: number; score: number; started: number; seq: number }> = [];
+    for (const r of light) {
+      const score = scoreNorm(words, String(r.norm ?? ''));
+      if (score >= minScore) top.push({ id: Number(r.id), score, started: Number(r.s_started), seq: Number(r.seq) });
+    }
+    top.sort((a, b) => b.score - a.score || b.started - a.started || a.seq - b.seq);
+    const picked = top.slice(0, limit);
+    if (!picked.length) return [];
+    const full = new Map(
+      this.all(`SELECT m.*, s.started_at AS s_started FROM messages m JOIN sessions s ON s.id = m.session_id WHERE m.id IN (${picked.map(() => '?').join(',')})`, ...picked.map((x) => x.id)).map((r) => [Number(r.id), r]),
+    );
+    return picked.filter((x) => full.has(x.id)).map((x) => hit(full.get(x.id)!, x.score));
   }
 
   deleteSession(id: string): boolean {
@@ -512,8 +560,8 @@ export class MemoryStore {
         this.run('INSERT INTO sessions (id, started_at, ended_at, trigger) VALUES (?, ?, ?, ?)', s.id, s.startedAt, s.endedAt, s.trigger);
         s.messages.forEach((m, i) => {
           this.run(
-            'INSERT INTO messages (session_id, item_id, seq, role, text, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            s.id, `restored-${i}`, m.seq, m.role, m.text, m.text === null ? 'failed' : m.status, m.createdAt,
+            'INSERT INTO messages (session_id, item_id, seq, role, text, norm, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            s.id, `restored-${i}`, m.seq, m.role, m.text, m.text === null ? null : normalizeText(m.text), m.text === null ? 'failed' : m.status, m.createdAt,
           );
         });
         sessions++;
@@ -562,11 +610,23 @@ function cleanContent(s: unknown): string {
   return t;
 }
 
-/** 検索語（空白区切りは AND）ごとの一致度の最小値 */
-function keywordScore(query: string, text: string): number {
-  const words = query.split(/[\s　,、]+/).filter(Boolean);
-  if (!words.length) return 0;
-  return Math.min(...words.map((w) => matchScore(w, text)));
+/** 検索語（空白区切りは AND）を、正規化した 2 文字の組の集合にする */
+function queryWords(query: string): Array<Set<string>> {
+  return query
+    .split(/[\s　,、]+/)
+    .map((w) => bigrams(normalizeText(w)))
+    .filter((g) => g.size > 0);
+}
+
+/** 正規化済みの本文に対する一致度（検索語ごとの「含まれる 2 文字の組の割合」の最小値） */
+function scoreNorm(words: Array<Set<string>>, norm: string): number {
+  let min = 1;
+  for (const g of words) {
+    let hit = 0;
+    for (const x of g) if (norm.includes(x)) hit++;
+    min = Math.min(min, hit / g.size);
+  }
+  return min;
 }
 
 function validateBackup(raw: unknown): BackupData {

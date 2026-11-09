@@ -7,6 +7,8 @@ import type { TranscriptLine } from '../useVoiceSession';
 import type { WakeController } from '../wake/useWakeController';
 import type { WakeLogEntry } from '../wake/useWakeStandby';
 import { fmtDb, fmtNum } from './parts';
+import { LatencyCard } from './LatencyCard';
+import type { LatencyRecord } from '../latency/latencyTrace';
 
 export interface InfoPanelProps {
   wake: WakeController;
@@ -15,13 +17,15 @@ export interface InfoPanelProps {
   connected: boolean;
   errors: string[];
   notice: string | null;
+  latency: LatencyRecord[];
+  onClearLatency: () => void;
 }
 
 type Item =
   | { at: number; src: 'wake'; e: WakeLogEntry }
   | { at: number; src: 'clap'; e: LogEntry };
 
-export function InfoPanel({ wake, clap, lines, connected, errors, notice }: InfoPanelProps) {
+export function InfoPanel({ wake, clap, lines, connected, errors, notice, latency, onClearLatency }: InfoPanelProps) {
   const items: Item[] = [
     ...wake.wake.log.map((e) => ({ at: e.at, src: 'wake' as const, e })),
     ...clap.standby.log.map((e) => ({ at: e.at, src: 'clap' as const, e })),
@@ -77,6 +81,8 @@ export function InfoPanel({ wake, clap, lines, connected, errors, notice }: Info
       </section>
 
       <MicCard />
+
+      <LatencyCard list={latency} onClear={onClearLatency} />
 
       {items.length > 0 && (
         <details className="k-card k-history">

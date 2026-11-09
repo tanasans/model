@@ -72,6 +72,10 @@ export interface SessionGrant {
   instructions: string;
   /** 接続直後に 1 回だけ使う挨拶の指示（挨拶なしなら null） */
   greetingInstructions: string | null;
+  /** 挨拶の文（ローカル挨拶の音声と一致するかの確認用。挨拶なしなら null） */
+  greetingText: string | null;
+  /** 計測用の模擬サーバーの接続先（サーバーの環境変数 REALTIME_WEBRTC_URL を設定したときだけ） */
+  realtimeUrl?: string;
 }
 
 export interface HealthInfo {

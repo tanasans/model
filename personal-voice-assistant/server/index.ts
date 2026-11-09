@@ -6,8 +6,8 @@
  * - ログには APIキー・トークン・音声・会話内容を出力しない。
  */
 import 'dotenv/config';
-import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
@@ -59,6 +59,11 @@ const INTERRUPT_RESPONSE = ((): boolean | null => {
   return v === 'true' ? true : v === 'false' ? false : null;
 })();
 const TRANSCRIPTION = strEnv('TRANSCRIPTION_MODEL', TRANSCRIPTION_MODEL);
+/** 計測用：WebRTC の接続先を模擬サーバーに切り替える（通常は未設定＝OpenAI）。ローカルのアドレスだけ受け付ける */
+const REALTIME_WEBRTC_URL = ((): string | null => {
+  const v = (process.env.REALTIME_WEBRTC_URL ?? '').trim();
+  return /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//.test(v) ? v : null;
+})();
 /** .env 由来の会話音声設定（画面のプリセット「標準」はこれをそのまま使う） */
 const BASE_AUDIO: ConversationAudio = {
   turnDetection: TURN_DETECTION,
@@ -194,6 +199,80 @@ app.post('/api/tools/:name', requireLocalOrigin, express.json({ limit: '2kb' }),
 const MIN_PREVIEW_INTERVAL_MS = 4_000;
 let previewBusy = false;
 let lastPreviewAt = 0;
+
+// ---------- ローカル挨拶（起動時の挨拶を KAITO の声で事前に作り、接続と同時に再生する） ----------
+// 作成は利用者が画面のボタンを押したときだけ（OpenAI の料金がかかる）。待機中に自動で作ることはない
+const GREETING_DIR = path.join(DATA_DIR, 'greetings');
+function greetingFile(voice: string, speed: number, text: string): string {
+  const key = createHash('sha256').update(`${MODEL}|${voice}|${speed}|${text}`).digest('hex').slice(0, 24);
+  return path.join(GREETING_DIR, `greeting-${key}.wav`);
+}
+
+app.get('/api/greeting', (req, res) => {
+  const voice = isVoiceId(req.query.voice) ? req.query.voice : VOICE;
+  const speed = isSpeechSpeed(Number(req.query.speed)) ? Number(req.query.speed) : DEFAULT_SPEECH_SPEED;
+  const text = sessionPersona(PERSONA_PATHS).greetingText;
+  if (!text) {
+    sendError(res, 404, 'NOT_FOUND', '起動時の挨拶が設定されていません。');
+    return;
+  }
+  const file = greetingFile(voice, speed, text);
+  if (!existsSync(file)) {
+    sendError(res, 404, 'NOT_FOUND', 'この声・速さ・挨拶の音声はまだ作成されていません。');
+    return;
+  }
+  res.setHeader('Content-Type', 'audio/wav');
+  res.setHeader('X-Greeting-Text', encodeURIComponent(text));
+  res.send(readFileSync(file));
+});
+
+app.post('/api/greeting/generate', requireLocalOrigin, express.json({ limit: '1kb' }), async (req, res) => {
+  const voice = isVoiceId(req.body?.voice) ? req.body.voice : VOICE;
+  const speed: SpeechSpeed = isSpeechSpeed(req.body?.speed) ? req.body.speed : DEFAULT_SPEECH_SPEED;
+  const persona = sessionPersona(PERSONA_PATHS);
+  if (!persona.greetingText) {
+    sendError(res, 400, 'BAD_REQUEST', '起動時の挨拶が空のため、作成できません（KAITO設定で挨拶を設定してください）。');
+    return;
+  }
+  if (!openai) {
+    sendError(res, 503, 'NO_API_KEY', 'サーバーに OPENAI_API_KEY が設定されていないため作成できません。');
+    return;
+  }
+  if (activeLease || previewBusy) {
+    sendError(res, 409, 'SESSION_BUSY', '会話中または試聴中です。終わってからお試しください。');
+    return;
+  }
+  if (Date.now() - lastPreviewAt < MIN_PREVIEW_INTERVAL_MS) {
+    sendError(res, 429, 'RATE_LIMITED', '続けて作成するには数秒お待ちください。');
+    return;
+  }
+  previewBusy = true;
+  lastPreviewAt = Date.now();
+  try {
+    const r = await previewVoice({
+      apiKey: API_KEY,
+      model: MODEL,
+      voice,
+      text: persona.greetingText,
+      instructions: persona.instructions,
+      url: process.env.REALTIME_WS_URL || undefined,
+      reasoningEffort: reasoningAccepted ? REASONING_EFFORT : null,
+      speed,
+    });
+    mkdirSync(GREETING_DIR, { recursive: true });
+    const file = greetingFile(voice, speed, persona.greetingText);
+    writeFileSync(`${file}.tmp`, r.wav);
+    renameSync(`${file}.tmp`, file);
+    log(`greeting audio created voice=${voice} speed=${speed} seconds=${r.audioSeconds.toFixed(2)}`);
+    res.json({ ok: true, seconds: r.audioSeconds });
+  } catch (err) {
+    const code = err instanceof PreviewError ? err.code : 'UPSTREAM_ERROR';
+    log(`greeting audio failed code=${code}`);
+    sendError(res, code === 'TIMEOUT' ? 504 : 502, code, err instanceof PreviewError ? err.message : '挨拶の音声を作成できませんでした。');
+  } finally {
+    previewBusy = false;
+  }
+});
 
 app.post('/api/voice-preview', requireLocalOrigin, express.json({ limit: '1kb' }), async (req, res) => {
   const voice: unknown = req.body?.voice;
@@ -364,9 +443,15 @@ app.post('/api/session', requireLocalOrigin, express.json({ limit: '1kb' }), asy
   const speechSpeed: SpeechSpeed = isSpeechSpeed(req.body?.speechSpeed) ? req.body.speechSpeed : DEFAULT_SPEECH_SPEED;
   const audio = applyAudioProfile(audioProfile, BASE_AUDIO);
   // KAITO.md と個人設定は会話のたびに読み直す（保存した変更は次の会話から反映）
+  // 計測：サーバー内の内訳（Server-Timing ヘッダーでブラウザに返す。数値のみ）
+  const tp = performance.now();
   const persona = sessionPersona(PERSONA_PATHS);
+  const personaMs = performance.now() - tp;
+  const tm = performance.now();
+  const memoryPart = memoryInstructions();
+  const memoryMs = performance.now() - tm;
   // 長期記憶の決まり・現在の日時・保存済みの好み（最大 5 件）を加える。待機中には何もしない（OpenAI へも接続しない）
-  const instructions = `${persona.instructions}\n\n${memoryInstructions()}`;
+  const instructions = `${persona.instructions}\n\n${memoryPart}`;
   const opts: SecretOptions = { voice, audio, speechSpeed, instructions };
 
   // 発行処理中に別リクエストが来ても 1 件に抑えるため、先にリースを確保する
@@ -379,6 +464,7 @@ app.post('/api/session', requireLocalOrigin, express.json({ limit: '1kb' }), asy
   activeLease = lease;
 
   try {
+    const ts = performance.now();
     let secret: Awaited<ReturnType<typeof issueClientSecret>>;
     try {
       secret = await issueClientSecret(openai, reasoningAccepted ? REASONING_EFFORT : null, opts);
@@ -408,7 +494,10 @@ app.post('/api/session', requireLocalOrigin, express.json({ limit: '1kb' }), asy
       speechSpeed,
       instructions,
       greetingInstructions: persona.greetingInstructions,
+      greetingText: persona.greetingText,
+      ...(REALTIME_WEBRTC_URL ? { realtimeUrl: REALTIME_WEBRTC_URL } : {}),
     };
+    res.setHeader('Server-Timing', `persona;dur=${personaMs.toFixed(1)}, memory;dur=${memoryMs.toFixed(1)}, secret;dur=${(performance.now() - ts).toFixed(1)}`);
     log(`client secret issued voice=${voice} audioProfile=${audioProfile} speed=${speechSpeed}`);
     res.json(body);
   } catch (err) {

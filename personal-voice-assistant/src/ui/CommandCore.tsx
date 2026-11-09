@@ -49,7 +49,7 @@ export function CommandCore({
   }, [state, readLevel]);
 
   return (
-    <div className={`cc cc-${state.toLowerCase()} ${view.connecting ? 'cc-connecting' : ''}`} ref={root} role="img" aria-label={`AIコア ${state} ${view.sub}`}>
+    <div className={`cc cc-${state.toLowerCase()} ${view.connecting ? 'cc-connecting' : ''} ${view.stage ? `cc-stage-${view.stage}` : ''}`} ref={root} role="img" aria-label={`AIコア ${state} ${view.sub}`}>
       <div className="cc-ring cc-outer" aria-hidden>
         {pulseKey > 0 && <span className="cc-pulse" key={`p${pulseKey}`} />}
       </div>

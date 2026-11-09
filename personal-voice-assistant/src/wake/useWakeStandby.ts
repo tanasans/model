@@ -98,11 +98,16 @@ export function useWakeStandby(opts: WakeStandbyOptions) {
       };
       recs = new WakeRecognizers(model, specs, (spec, final) => {
         if (cancelled) return;
+        // 計測：認識確定の時刻と、認識器の時間軸から求めた「言葉の終わり」の時刻
+        const recognizedAt = performance.now();
+        const lastEnd = Math.max(0, ...(final.result ?? []).map((w) => w.end));
+        const timing = { recognizedAt, speechEndAt: recognizedAt - Math.max(0, tracker.timeSec - lastEnd) * 1000 };
         if (spec.id === 'nee') {
           const found = (final.result ?? []).filter((w) => DECOY_WORDS.includes(w.word));
           if (found.length) decoys = [...decoys, ...found].filter((w) => w.end > tracker.timeSec - 10);
         }
-        const d = evaluateFinal(final, spec, tracker, sensRef.current);
+        const ev = evaluateFinal(final, spec, tracker, sensRef.current);
+        const d = ev ? { ...ev, timing } : null;
         if (!d) {
           // 呼びかけの言葉を含まない確定結果（似た言葉など）だけを表示する。
           // （「両方」モードでは 2 つの認識器が担当外の言い方を受け取るが、それは表示しない）

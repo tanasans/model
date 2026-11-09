@@ -15,6 +15,7 @@ import {
   diffPersona,
   findSecrets,
   mergePersona,
+  normalizeGreeting,
   parsePersonaMarkdown,
   type PersonaIssue,
   type PersonaOverrides,
@@ -96,9 +97,10 @@ export function loadPersona(paths: PersonaPaths): PersonaView {
 }
 
 /** 次の会話で使う指示文と挨拶 */
-export function sessionPersona(paths: PersonaPaths): { instructions: string; greetingInstructions: string | null } {
+export function sessionPersona(paths: PersonaPaths): { instructions: string; greetingInstructions: string | null; greetingText: string | null } {
   const v = loadPersona(paths);
-  return { instructions: buildInstructions(v.effective), greetingInstructions: buildGreetingInstructions(v.effective.greeting) };
+  const g = normalizeGreeting(v.effective.greeting);
+  return { instructions: buildInstructions(v.effective), greetingInstructions: buildGreetingInstructions(g), greetingText: g || null };
 }
 
 /** 画面で編集した内容（全項目または一部）を個人設定として保存する。基本設定と同じ項目は保存しない */

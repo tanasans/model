@@ -10,9 +10,18 @@ export interface MemoryToolContext {
   /** 今の会話の記録（会話履歴の保存 ID・確定したユーザー発言） */
   current: () => { sessionId: string | null; userFinalCount: number; recentUserTexts: string[] } | null;
   fetchImpl?: typeof fetch;
+  /** 応答時間の計測（ツールの実行開始・終了。serverMs はサーバー内の処理時間） */
+  onCall?: (e: { tool: string; phase: 'start' | 'end'; serverMs?: number }) => void;
 }
 
-export async function callMemoryTool(name: string, args: Record<string, unknown>, sessionId: string | null, fetchImpl: typeof fetch = (...a) => fetch(...a)): Promise<Record<string, unknown>> {
+export async function callMemoryTool(
+  name: string,
+  args: Record<string, unknown>,
+  sessionId: string | null,
+  fetchImpl: typeof fetch = (...a) => fetch(...a),
+  onCall?: MemoryToolContext['onCall'],
+): Promise<Record<string, unknown>> {
+  onCall?.({ tool: name, phase: 'start' });
   try {
     const res = await fetchImpl(`/api/memory/tool/${name}`, {
       method: 'POST',
@@ -20,6 +29,7 @@ export async function callMemoryTool(name: string, args: Record<string, unknown>
       body: JSON.stringify({ args, sessionId }),
     });
     const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    onCall?.({ tool: name, phase: 'end', serverMs: Number(res.headers.get('X-Memory-Ms') ?? NaN) });
     return body ?? { ok: false, error: `記憶の処理に失敗しました（HTTP ${res.status}）。` };
   } catch {
     return { ok: false, error: 'ローカルサーバーに接続できないため、記憶を使えません。「確認できません」と答えてください。' };
@@ -49,7 +59,7 @@ export function createMemoryTools(ctx: MemoryToolContext) {
     execute: async (input) => {
       const g = gateSave(ctx, input.explicit_request);
       if (!g.ok) return { ok: false, error: g.reason };
-      return callMemoryTool('save_memory', input, sid(), ctx.fetchImpl);
+      return callMemoryTool('save_memory', input, sid(), ctx.fetchImpl, ctx.onCall);
     },
   });
 
@@ -64,7 +74,7 @@ export function createMemoryTools(ctx: MemoryToolContext) {
       date_from: z.string().nullable().describe('開始日。today / yesterday / YYYY-MM-DD。なければ null'),
       date_to: z.string().nullable().describe('終了日（その日を含む）。today / yesterday / YYYY-MM-DD。なければ null'),
     }),
-    execute: async (input) => callMemoryTool('search_memory', input, sid(), ctx.fetchImpl),
+    execute: async (input) => callMemoryTool('search_memory', input, sid(), ctx.fetchImpl, ctx.onCall),
   });
 
   const update = tool({
@@ -76,7 +86,7 @@ export function createMemoryTools(ctx: MemoryToolContext) {
       category: category.nullable().describe('新しい分類。変えない場合は null'),
       sensitive_confirmed: z.boolean().describe('機微な情報について了承を得た場合だけ true'),
     }),
-    execute: async (input) => callMemoryTool('update_memory', input, sid(), ctx.fetchImpl),
+    execute: async (input) => callMemoryTool('update_memory', input, sid(), ctx.fetchImpl, ctx.onCall),
   });
 
   const remove = tool({
@@ -86,7 +96,7 @@ export function createMemoryTools(ctx: MemoryToolContext) {
       memory_id: z.string().describe('search_memory の結果の memory_id'),
       confirmed: z.boolean().describe('ユーザーが削除を了承した場合だけ true'),
     }),
-    execute: async (input) => callMemoryTool('delete_memory', input, sid(), ctx.fetchImpl),
+    execute: async (input) => callMemoryTool('delete_memory', input, sid(), ctx.fetchImpl, ctx.onCall),
   });
 
   return [save, search, update, remove];
