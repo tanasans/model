@@ -2137,3 +2137,16 @@ input[type='range']::-moz-range-thumb {
   color: var(--gold);
   font-size: 0.84rem;
 }
+
+/* 拍手で起動した履歴（判定値） */
+.k-clap-history li {
+  line-height: 1.55;
+  word-break: break-word;
+}
+.k-clap-history .row-actions {
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.k-clap-history .k-src {
+  margin-right: 6px;
+}

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ASSISTANT_NAME } from '../../shared/assistant';
 import { getMicHubInfo, type MicHubInfo } from '../audio/micHub';
 import type { ClapController } from '../clap/useClapController';
+import { OUTCOME_LABEL, type ClapTriggerRecord, type SoundSummary } from '../clap/clapHistory';
 import type { LogEntry } from '../clap/useClapStandby';
 import type { TranscriptLine } from '../useVoiceSession';
 import type { WakeController } from '../wake/useWakeController';
@@ -77,6 +78,8 @@ export function InfoPanel({ wake, clap, lines, connected, errors, notice }: Info
       </section>
 
       <MicCard />
+
+      <ClapTriggerHistory clap={clap} />
 
       {items.length > 0 && (
         <details className="k-card k-history">
@@ -213,4 +216,55 @@ function MicCard() {
       )}
     </section>
   );
+}
+
+/** 拍手で起動したときの履歴（判定値・直前の静けさ・その後に話しかけたか）。数値だけを表示・コピーする */
+function ClapTriggerHistory({ clap }: { clap: ClapController }) {
+  const [copied, setCopied] = useState(false);
+  const list = clap.history;
+  if (list.length === 0) return null;
+  const noSpeech = list.filter((r) => r.outcome === 'no-speech').length;
+  return (
+    <details className="k-card k-history k-clap-history">
+      <summary className="k-card-title">
+        <span>
+          拍手で起動した履歴（{list.length} 件{noSpeech ? `・話しかけなし ${noSpeech} 件` : ''}）
+        </span>
+        <span className="k-card-en">CLAP TRIGGERS</span>
+      </summary>
+      <ul>
+        {list.map((r) => (
+          <li key={r.id} className={r.outcome === 'no-speech' ? 'tone-warn' : r.outcome === 'spoke' ? 'tone-ok' : ''}>
+            <time>{new Date(r.at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time>
+            <span className="k-src">{OUTCOME_LABEL[r.outcome]}</span>
+            {recordText(r)}
+          </li>
+        ))}
+      </ul>
+      <div className="row-actions">
+        <button
+          className="btn btn-small"
+          onClick={() => {
+            void navigator.clipboard?.writeText(JSON.stringify(list, null, 1)).then(
+              () => setCopied(true),
+              () => setCopied(false),
+            );
+          }}
+        >
+          {copied ? 'コピーしました' : '数値をコピー（調整の相談用）'}
+        </button>
+        <button className="btn btn-small btn-ghost" onClick={clap.clearHistory}>
+          履歴を消す
+        </button>
+      </div>
+    </details>
+  );
+}
+
+function soundText(s: SoundSummary): string {
+  return `${fmtNum(s.levelDb)}dB・急変${fmtNum(s.jumpDb)}・短さ${fmtNum(s.decayDb)}・余韻${fmtNum(s.tailDb)}・尖り${fmtNum(s.crest)}${s.kbd !== null ? `・キーボード差${fmtNum(s.kbd)}` : ''}`;
+}
+
+function recordText(r: ClapTriggerRecord): string {
+  return `間隔 ${(r.intervalMs / 1000).toFixed(2)}秒／直前の静けさ ${(r.quietBeforeMs / 1000).toFixed(1)}秒（直前6秒の小さな鋭い音 ${r.softBefore} 回）／1回目 ${soundText(r.sounds[0])}／2回目 ${soundText(r.sounds[1])}／反応ライン ${fmtNum(r.triggerDb)}dB・感度 ${r.sensitivity}${r.usedSignature ? '・キーボード音登録あり' : ''}`;
 }

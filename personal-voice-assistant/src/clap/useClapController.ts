@@ -1,5 +1,16 @@
-import { useCallback, useEffect, useState } from 'react';
-import { DEFAULT_PROFILE, type ClapProfile } from './clapDetector';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { DEFAULT_PROFILE, type ClapProfile, type DoubleClapDetail } from './clapDetector';
+import {
+  addRecord,
+  type ClapOutcome,
+  type ClapTriggerRecord,
+  GUARD_COUNT,
+  loadClapHistory,
+  recordFromDetail,
+  saveClapHistory,
+  setOutcome,
+  shouldPauseClap,
+} from './clapHistory';
 import { sanitizeProfile } from './calibration';
 import { playChime } from './chime';
 import { useCalibration } from './useCalibration';
@@ -105,16 +116,59 @@ export function useClapController({ paused, testMode, onClapStart }: ClapControl
     } else save(PROFILE_KEY, next);
   }, []);
 
-  const onDoubleClap = useCallback(() => {
-    if (testMode) {
-      // テストモード：会話は開始せず、回数だけ数える（API 料金なし）
-      setTestCount((n) => n + 1);
-      void playChime();
-      return;
+  // 拍手で起動したときの履歴（判定値と、その後に話しかけたか）。数値だけを保存する
+  const [history, setHistory] = useState<ClapTriggerRecord[]>(loadClapHistory);
+  useEffect(() => saveClapHistory(history), [history]);
+  const pendingIdRef = useRef<string | null>(null);
+  /** 誤起動による自動停止の判定は、拍手待機を ON にした時点以降の記録だけで行う */
+  const guardSinceRef = useRef(0);
+  const [guardNotice, setGuardNotice] = useState<string | null>(null);
+
+  const onDoubleClap = useCallback(
+    (detail: DoubleClapDetail) => {
+      const at = Date.now();
+      if (testMode) {
+        // テストモード：会話は開始せず、回数だけ数える（API 料金なし）
+        setHistory((h) => addRecord(h, recordFromDetail(detail, { at, profileKind: kind, outcome: 'test' })));
+        setTestCount((n) => n + 1);
+        void playChime();
+        return;
+      }
+      const rec = recordFromDetail(detail, { at, profileKind: kind, outcome: 'pending' });
+      pendingIdRef.current = rec.id;
+      setHistory((h) => addRecord(h, rec));
+      // 起動音・接続・二重起動防止は App 側でまとめて行う（音声呼びかけと共通）
+      void onClapStart();
+    },
+    [onClapStart, testMode, kind],
+  );
+
+  const historyRef = useRef(history);
+  historyRef.current = history;
+
+  /** 拍手で始めた会話の結果を記録する。誤起動が続いたら拍手待機を止めて true を返す */
+  const markOutcome = useCallback((outcome: Exclude<ClapOutcome, 'pending' | 'test'>): boolean => {
+    const id = pendingIdRef.current;
+    pendingIdRef.current = null;
+    if (!id) return false;
+    const next = setOutcome(historyRef.current, id, outcome);
+    historyRef.current = next;
+    setHistory(next);
+    const paused = outcome === 'no-speech' && shouldPauseClap(next, Date.now(), guardSinceRef.current);
+    if (paused) {
+      setStandbyOn(false);
+      setGuardNotice(`拍手で起動したあと話しかけがない状態が ${GUARD_COUNT} 回続いたため、誤起動と判断して拍手待機をOFFにしました（不要な接続を防ぐため）。`);
     }
-    // 起動音・接続・二重起動防止は App 側でまとめて行う（音声呼びかけと共通）
-    void onClapStart();
-  }, [onClapStart, testMode]);
+    return paused;
+  }, []);
+
+  const setStandby = useCallback((v: boolean) => {
+    if (v) {
+      guardSinceRef.current = Date.now();
+      setGuardNotice(null);
+    }
+    setStandbyOn(v);
+  }, []);
 
   const standby = useClapStandby({
     enabled: standbyOn,
@@ -139,7 +193,12 @@ export function useClapController({ paused, testMode, onClapStart }: ClapControl
 
   return {
     standbyOn,
-    setStandbyOn,
+    setStandbyOn: setStandby,
+    history,
+    clearHistory: () => setHistory([]),
+    markOutcome,
+    guardNotice,
+    dismissGuardNotice: () => setGuardNotice(null),
     settings,
     setSensitivity: (v: number) => setSettings((s) => ({ ...s, sensitivity: clampInt(v, 1, 10) })),
     setMaxIntervalMs: (v: number) => setSettings((s) => ({ ...s, maxIntervalMs: clampInt(v, 300, 1000) })),

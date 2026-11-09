@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ClapDetector, type ClapProfile, type TransientInfo } from './clapDetector';
+import { ClapDetector, type ClapProfile, type DoubleClapDetail, type TransientInfo } from './clapDetector';
 import { subscribeMic, type MicSubscription } from '../audio/micHub';
 import { MicError, type MicProcessing } from './micCapture';
 
@@ -17,7 +17,7 @@ export interface ClapStandbyOptions {
   sensitivity: number;
   maxIntervalMs: number;
   profile: ClapProfile;
-  onDoubleClap: (intervalMs: number) => void;
+  onDoubleClap: (detail: DoubleClapDetail) => void;
 }
 
 export interface Meter {
@@ -78,8 +78,9 @@ export function useClapStandby(opts: ClapStandbyOptions) {
           push({ kind: 'note', tone: 'warn', text: `取り消し：${e.reason}` });
         } else if (e.type === 'double-clap') {
           setStatus('listening');
-          push({ kind: 'note', tone: 'ok', text: `拍手2回を検知しました（間隔 ${(e.intervalMs / 1000).toFixed(2)} 秒）` });
-          onDoubleRef.current(e.intervalMs);
+          const q = (e.detail.quietBeforeMs / 1000).toFixed(1);
+          push({ kind: 'note', tone: 'ok', text: `拍手2回を検知しました（間隔 ${(e.intervalMs / 1000).toFixed(2)} 秒・直前の静けさ ${q} 秒・余韻 ${e.detail.first.tailDb}/${e.detail.second.tailDb}dB）` });
+          onDoubleRef.current(e.detail);
         }
       }
     })

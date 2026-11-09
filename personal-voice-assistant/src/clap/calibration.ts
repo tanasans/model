@@ -1,4 +1,15 @@
-import { ClapDetector, DEFAULT_PROFILE, type ClapProfile, type TransientInfo } from './clapDetector';
+import {
+  ClapDetector,
+  DEFAULT_PROFILE,
+  featureVector,
+  SIGNATURE_MAX_CLAPS,
+  SIGNATURE_MAX_NOISES,
+  signatureRatio,
+  signatureThreshold,
+  type ClapProfile,
+  type ClapSignature,
+  type TransientInfo,
+} from './clapDetector';
 
 /**
  * キャリブレーション（実際のマイク・部屋に合わせた判定基準づくり）。
@@ -68,6 +79,8 @@ export interface CalibrationResult {
     clapLevelDb: number | null;
     noiseCount: number;
     noiseFalseAccepts: number;
+    /** 判定に登録した拍手以外の音（キーボード・話し声）の数 */
+    noiseRegistered: number;
   };
 }
 
@@ -82,16 +95,30 @@ export function percentile(values: number[], p: number): number {
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
-/** 判定基準で 1 つの音を判定し直す（感度 5 相当） */
+/** 判定基準で 1 つの音を判定し直す（感度 5 相当。登録したキーボード音との比較も含む） */
 export function passes(info: TransientInfo, p: ClapProfile, floorDb: number): boolean {
+  const ratio = signatureRatio(p.signature, featureVector(info));
   return (
     info.levelDb >= Math.max(p.minLevelDb, floorDb + p.minAboveFloorDb) &&
     info.jumpDb >= p.minJumpDb &&
     info.riseMs <= p.maxRiseMs &&
     info.decayDb >= p.minDecayDb &&
     info.centroidHz >= p.minCentroidHz &&
-    info.crest <= p.maxCrest
+    info.crest <= p.maxCrest &&
+    (ratio === null || ratio >= signatureThreshold(5))
   );
+}
+
+/**
+ * 手順3の音（キーボード・話し声）のうち、判定に登録するもの：環境音より十分大きいもの（大きい順に最大 30 個）。
+ * 拍手の基準に届かないほど小さい音は、そもそも拍手と誤認されないので登録しない。
+ */
+export function registrableNoises(noises: TransientInfo[], ambient: AmbientStats, clapLowDb: number): TransientInfo[] {
+  const minDb = Math.max(ambient.floorDb + 10, clapLowDb - 20);
+  return noises
+    .filter((n) => n.levelDb >= minDb)
+    .sort((a, b) => b.levelDb - a.levelDb)
+    .slice(0, SIGNATURE_MAX_NOISES);
 }
 
 /** 環境音だけから作る基準：標準の判定項目のまま、反応ラインだけ環境に合わせる */
@@ -100,6 +127,7 @@ export function ambientOnlyProfile(a: AmbientStats): ClapProfile {
     ...DEFAULT_PROFILE,
     minLevelDb: round(clamp(a.clapGateDb, -60, -12)),
     minAboveFloorDb: round(clamp(a.clapGateDb - a.floorDb - 2, 8, 30)),
+    ...(a.smallSoundDb !== null ? { roomSoundDb: a.smallSoundDb } : {}),
   };
 }
 
@@ -134,7 +162,7 @@ export function computeCalibration(input: CalibrationInput): CalibrationResult {
       profile: fallbackProfile,
       fallbackProfile,
       notes,
-      summary: { ...summaryBase, clapLevelDb: null, noiseFalseAccepts: 0 },
+      summary: { ...summaryBase, clapLevelDb: null, noiseFalseAccepts: 0, noiseRegistered: 0 },
     };
   }
 
@@ -150,8 +178,28 @@ export function computeCalibration(input: CalibrationInput): CalibrationResult {
     minDecayDb: clamp(percentile(claps.map((c) => c.decayDb), 0) - 2.5, 2, 15),
     minCentroidHz: clamp(percentile(claps.map((c) => c.centroidHz), 0) * 0.7, 300, 2500),
     maxCrest: clamp(percentile(claps.map((c) => c.crest), 100) + 1.5, 4.5, 14),
+    ...(amb.smallSoundDb !== null ? { roomSoundDb: amb.smallSoundDb } : {}),
   };
   notes.push(`拍手を ${claps.length} 回検出しました（大きさ ${round(clapLow)}〜${round(percentile(lv, 100))}dB）。`);
+
+  // 手順3の音（キーボード・話し声）を判定に登録する（以前は反応ライン・短さの調整にしか使っていなかった）
+  const reg = registrableNoises(noises, amb, clapLow);
+  if (reg.length >= 3) {
+    const crestMax = percentile(claps.map((c) => c.crest), 100);
+    const noiseCrestLow = percentile(reg.map((n) => n.crest), 20);
+    if (noiseCrestLow - crestMax >= 1) {
+      // キーボード音の大半が拍手より「尖って」いれば、その間に基準を置く（標準より緩めない）
+      profile.maxCrest = clamp(Math.min(profile.maxCrest, (crestMax + noiseCrestLow) / 2), 4.5, 14);
+    }
+    const signature: ClapSignature = {
+      claps: claps.slice(0, SIGNATURE_MAX_CLAPS).map((c) => featureVector(c).map(round2)),
+      noises: reg.map((n) => featureVector(n).map(round2)),
+    };
+    profile.signature = signature;
+    notes.push(`キーボード音・話し声を ${reg.length} 個登録しました。これらに近い音は拍手として数えません。`);
+  } else if (noises.length) {
+    notes.push('キーボード音・話し声は小さく、拍手と誤認されにくい大きさでした（登録は不要でした）。');
+  }
 
   let falseAccepts = noises.filter((n) => passes(n, profile, floor)).length;
   if (noises.length && falseAccepts > 0) {
@@ -188,7 +236,7 @@ export function computeCalibration(input: CalibrationInput): CalibrationResult {
     profile: roundProfile(profile),
     fallbackProfile,
     notes,
-    summary: { ...summaryBase, clapLevelDb: round(clapLow), noiseFalseAccepts: falseAccepts },
+    summary: { ...summaryBase, clapLevelDb: round(clapLow), noiseFalseAccepts: falseAccepts, noiseRegistered: profile.signature?.noises.length ?? 0 },
   };
 }
 
@@ -196,8 +244,14 @@ function round(n: number): number {
   return Math.round(n * 10) / 10;
 }
 
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
 function roundProfile(p: ClapProfile): ClapProfile {
   return {
+    ...(p.signature ? { signature: p.signature } : {}),
+    ...(p.roomSoundDb !== undefined ? { roomSoundDb: round(p.roomSoundDb) } : {}),
     minLevelDb: round(p.minLevelDb),
     minAboveFloorDb: round(p.minAboveFloorDb),
     minJumpDb: round(p.minJumpDb),
@@ -225,7 +279,23 @@ export function sanitizeProfile(raw: unknown): ClapProfile | null {
     minCentroidHz: num('minCentroidHz', 100, 5000),
     maxCrest: num('maxCrest', 3, 20),
   };
-  return Object.values(p).every((v) => v !== null) ? (p as ClapProfile) : null;
+  if (!Object.values(p).every((v) => v !== null)) return null;
+  const out = p as ClapProfile;
+  const room = num('roomSoundDb' as keyof ClapProfile, -100, 0);
+  if (r.roomSoundDb !== undefined && room !== null) out.roomSoundDb = room;
+  const sig = sanitizeSignature(r.signature);
+  if (sig) out.signature = sig;
+  return out;
+}
+
+function sanitizeSignature(raw: unknown): ClapSignature | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const vecs = (v: unknown, max: number) =>
+    Array.isArray(v) ? v.filter((x) => Array.isArray(x) && x.length === 5 && x.every((n) => typeof n === 'number' && Number.isFinite(n))).slice(0, max) as number[][] : [];
+  const claps = vecs(r.claps, SIGNATURE_MAX_CLAPS);
+  const noises = vecs(r.noises, SIGNATURE_MAX_NOISES);
+  return claps.length && noises.length ? { claps, noises } : null;
 }
 
 /** キャリブレーション中に音の特徴を集めるための、ほぼ何でも拾う基準 */
