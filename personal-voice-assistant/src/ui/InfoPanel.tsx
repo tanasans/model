@@ -88,7 +88,9 @@ export function InfoPanel({ wake, clap, lines, connected, errors, notice, latenc
             <span className="k-card-en">RECOGNIZER</span>
           </h2>
           <p className="k-empty">
-            {wake.wake.level.backlogSec.toFixed(1)} 秒（まだ処理していない音声）{wake.wake.restarts ? ` ／ やり直し ${wake.wake.restarts} 回` : ''}
+            {wake.wake.level.backlogSec.toFixed(1)} 秒（まだ処理していない音声）
+            {wake.wake.level.speed !== null ? ` ／ 処理速度 ${wake.wake.level.speed.toFixed(2)} 倍` : ''}
+            {wake.wake.restarts ? ` ／ やり直し ${wake.wake.restarts} 回` : ''} ／ 静かで送らなかった音声 {wake.wake.level.gatedPct}%
           </p>
           {wake.wake.level.backlogSec > 1.5 && <p className="k-notice">PC の処理が追いついていません。遅れが大きいときは自動で認識をやり直します。</p>}
         </section>

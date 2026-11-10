@@ -53,17 +53,20 @@ type Recognizer = InstanceType<Model['KaldiRecognizer']>;
  * （vosk-browser は音声のかたまりを 1 つ処理するごとに result か partialresult を返す）。
  */
 export class WakeRecognizers {
-  private readonly recs: Array<{ spec: RecognizerSpec; rec: Recognizer; pending: number[]; pendingSamples: number }>;
+  private readonly recs: Array<{ spec: RecognizerSpec; rec: Recognizer; pending: number[]; pendingSamples: number; doneSamples: number }>;
   private disposed = false;
 
   constructor(model: Model, specs: RecognizerSpec[], onFinal: (spec: RecognizerSpec, final: VoskFinal) => void) {
     this.recs = specs.map((spec) => {
       const rec = new model.KaldiRecognizer(WAKE_SAMPLE_RATE, JSON.stringify(spec.grammar));
       rec.setWords(true);
-      const entry = { spec, rec, pending: [] as number[], pendingSamples: 0 };
+      const entry = { spec, rec, pending: [] as number[], pendingSamples: 0, doneSamples: 0 };
       const processed = () => {
         const n = entry.pending.shift();
-        if (n !== undefined) entry.pendingSamples -= n;
+        if (n !== undefined) {
+          entry.pendingSamples -= n;
+          entry.doneSamples += n;
+        }
       };
       // 確定結果のみを使う（途中結果は誤起動が多いため使わない）
       rec.on('result', (msg) => {
@@ -77,6 +80,11 @@ export class WakeRecognizers {
       });
       return entry;
     });
+  }
+
+  /** 処理が終わった音声の長さ（秒）。複数の認識器のうち遅い方（処理速度の計算用） */
+  processedSec(): number {
+    return Math.min(...this.recs.map((r) => r.doneSamples / WAKE_SAMPLE_RATE));
   }
 
   /** 認識の遅れ（まだ処理されていない音声の長さ、秒）。複数の認識器のうち大きい方 */
