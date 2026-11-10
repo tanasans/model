@@ -187,6 +187,7 @@ const KNOWN_STORAGE_KEYS = [
   'pva.standby.v1',
   'pva.conversation.v1',
   'pva.latency.v1',
+  'pva.uiStolen', // 画面の切り替えの表示用（sessionStorage・一時的。個人情報なし）
 ].sort();
 
 test('保存データの棚卸し: ブラウザに保存するキーは既知のものだけ', () => {

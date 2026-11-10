@@ -2343,6 +2343,7 @@ input[type='range']::-moz-range-thumb {
   gap: 6px;
   padding-top: 10px;
   border-top: 1px solid var(--line);
+}
 /* 拍手で起動した履歴（判定値） */
 .k-clap-history li {
   line-height: 1.55;
@@ -2369,4 +2370,15 @@ input[type='range']::-moz-range-thumb {
   background: rgba(8, 9, 12, 0.94);
   color: var(--text);
   font-size: 1.1rem;
+}
+
+/* 二重起動の案内 */
+.already-running {
+  padding: 24px;
+  text-align: center;
+}
+.already-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 12px;
 }
