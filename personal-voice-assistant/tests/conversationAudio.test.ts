@@ -101,7 +101,7 @@ test('設定の保存と復元: 保存した値が次回起動時に復元され
   // 以前の版で保存した設定（localGreeting なし）は既定（ON：作成済みの音声があるときだけ使う）で読み込む
   st.m.set(CONVERSATION_SETTINGS_KEY, JSON.stringify({ audioProfile: 'tv_light', speechSpeed: 1 }));
   assert.equal(loadConversationSettings(st).localGreeting, true);
-  assert.equal(loadConversationSettings(st).fastStart, false, '高速起動は既定 OFF（従来どおり）');
+  assert.equal(loadConversationSettings(st).fastStart, true, '高速起動は既定 ON（実機で確認済み）');
 });
 
 test('設定の保存と復元: 壊れた・不正な保存データは既定に戻す', () => {
@@ -112,7 +112,7 @@ test('設定の保存と復元: 壊れた・不正な保存データは既定に
   );
   assert.deepEqual(
     loadConversationSettings(memoryStore({ [CONVERSATION_SETTINGS_KEY]: JSON.stringify({ audioProfile: 'tv_light' }) })),
-    { audioProfile: 'tv_light', speechSpeed: 1, localGreeting: true, fastStart: false },
+    { audioProfile: 'tv_light', speechSpeed: 1, localGreeting: true, fastStart: true },
     '片方だけ正しければその値だけ使う',
   );
   const throwing = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } };

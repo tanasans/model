@@ -3,6 +3,7 @@ import { subscribeMic, type MicSubscription } from '../audio/micHub';
 import { MicError } from '../clap/micCapture';
 import { WakePreprocessor } from './dsp';
 import { LevelTracker } from './levelTracker';
+import { RecognizerHealth } from './recognizerHealth';
 import { checkModel, loadModel, unloadModel, WakeRecognizers } from './voskEngine';
 import {
   decoyVeto,
@@ -54,6 +55,10 @@ export function useWakeStandby(opts: WakeStandbyOptions) {
   const [log, setLog] = useState<WakeLogEntry[]>([]);
   /** backlogSec：音声認識の遅れ（まだ処理されていない音声の長さ、秒）。表示のためだけに数える（認識には影響しない） */
   const [level, setLevel] = useState<{ levelDb: number; floorDb: number; backlogSec: number } | null>(null);
+  /** 認識の作り直し（値が変わると認識器を作り直す） */
+  const [restartKey, setRestartKey] = useState(0);
+  const [restarts, setRestarts] = useState(0);
+  const healthRef = useRef(new RecognizerHealth());
   const onWakeRef = useRef(opts.onWake);
   onWakeRef.current = opts.onWake;
   const sensRef = useRef(opts.sensitivity);
@@ -109,6 +114,12 @@ export function useWakeStandby(opts: WakeStandbyOptions) {
         }
         const ev = evaluateFinal(final, spec, tracker, sensRef.current);
         const d = ev ? { ...ev, timing } : null;
+        // 1. 認識が大きく遅れている（話してからだいぶ時間が経っている）結果では起動しない
+        const lag = recs?.backlogSec() ?? 0;
+        if (d?.accepted && healthRef.current.isStale(lag)) {
+          push({ kind: 'note', text: `認識が ${lag.toFixed(1)} 秒遅れていたため、起動しませんでした（古い呼びかけの可能性）` });
+          return;
+        }
         if (!d) {
           // 呼びかけの言葉を含まない確定結果（似た言葉など）だけを表示する。
           // （「両方」モードでは 2 つの認識器が担当外の言い方を受け取るが、それは表示しない）
@@ -150,7 +161,38 @@ export function useWakeStandby(opts: WakeStandbyOptions) {
         return;
       }
       pp = new WakePreprocessor(mic.sampleRate, { noiseReduction });
-      timer = window.setInterval(() => setLevel({ levelDb: tracker.lastDb, floorDb: tracker.floorDb(), backlogSec: recs?.backlogSec() ?? 0 }), 100);
+      const startedAt = performance.now();
+      timer = window.setInterval(() => {
+        const backlogSec = recs?.backlogSec() ?? 0;
+        setLevel({ levelDb: tracker.lastDb, floorDb: tracker.floorDb(), backlogSec });
+        // 2・3. 遅れがたまったら作り直す／長時間の待機では定期的に作り直す（どちらも静かなときだけ）
+        const t = tracker.timeSec;
+        const loud = tracker.maxDb(t - 1, t);
+        const quiet = loud === null || loud < tracker.floorDb() + 10;
+        const action = healthRef.current.check(performance.now(), backlogSec, performance.now() - startedAt, quiet);
+        if (action === 'none' || cancelled) return;
+        cancelled = true;
+        if (timer !== null) window.clearInterval(timer);
+        recs?.dispose();
+        recs = null;
+        if (action === 'refresh') {
+          push({ kind: 'note', text: '待機が長く続いたため、音声認識を作り直しました（定期的なお手入れ）' });
+        } else {
+          // たまった音声を捨てるため、音声認識を止めて読み込み直す
+          unloadModel();
+          if (action === 'give-up') {
+            mic?.close();
+            setError(
+              'この PC では音声認識の処理が追いつかない状態が続いたため、音声待機を止めました。ほかのアプリやタブを閉じる、Chrome の省エネモードを OFF にする、PC を再起動する、のいずれかを試してから、音声待機を ON にし直してください。',
+            );
+            setStatus('error');
+            return;
+          }
+          push({ kind: 'note', text: `音声認識が ${backlogSec.toFixed(1)} 秒遅れたため、たまった音声を捨てて認識をやり直しました` });
+        }
+        setRestarts((n) => n + 1);
+        setRestartKey((k) => k + 1);
+      }, 100);
       setStatus('listening');
     })().catch((e: unknown) => {
       if (cancelled) return;
@@ -168,7 +210,7 @@ export function useWakeStandby(opts: WakeStandbyOptions) {
       recs?.dispose();
       mic?.close();
     };
-  }, [active, enabled, mode, noiseReduction]);
+  }, [active, enabled, mode, noiseReduction, restartKey]);
 
   // 音声待機 OFF・タブを閉じるときは、認識モデルのメモリも解放する
   useEffect(() => {
@@ -180,5 +222,5 @@ export function useWakeStandby(opts: WakeStandbyOptions) {
     return () => window.removeEventListener('pagehide', onPageHide);
   }, []);
 
-  return { status, error, log, level, clearLog: () => setLog([]) };
+  return { status, error, log, level, restarts, clearLog: () => setLog([]) };
 }

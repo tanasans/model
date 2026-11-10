@@ -23,7 +23,7 @@ export interface ConversationSettings {
   localGreeting: boolean;
   /**
    * 高速起動：起動音の鳴り終わりを待たず、会話用マイクと一時キーを並行して準備する。
-   * 既定は OFF（従来どおり、起動音の後に順番に準備）。実機で呼びかけの認識に影響が出たため選べるようにした
+   * 既定は ON（実機で、PC の再起動後は ON でも呼びかけに反応することを確認）。OFF にすると従来どおり起動音の後に順番に準備する
    */
   fastStart: boolean;
 }
@@ -32,7 +32,7 @@ export const DEFAULT_CONVERSATION_SETTINGS: ConversationSettings = {
   audioProfile: DEFAULT_AUDIO_PROFILE,
   speechSpeed: DEFAULT_SPEECH_SPEED,
   localGreeting: true,
-  fastStart: false,
+  fastStart: true,
 };
 
 type KV = Pick<Storage, 'getItem' | 'setItem'>;
@@ -54,7 +54,7 @@ export function loadConversationSettings(store: KV | null = storage()): Conversa
       audioProfile: isAudioProfileId(v?.audioProfile) ? v.audioProfile : DEFAULT_AUDIO_PROFILE,
       speechSpeed: isSpeechSpeed(v?.speechSpeed) ? v.speechSpeed : DEFAULT_SPEECH_SPEED,
       localGreeting: v?.localGreeting !== false,
-      fastStart: v?.fastStart === true,
+      fastStart: v?.fastStart !== false,
     };
   } catch {
     return { ...DEFAULT_CONVERSATION_SETTINGS };

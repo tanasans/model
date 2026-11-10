@@ -25,6 +25,7 @@
     "src/clap/clapHistory.ts",
     "src/wake/wakePolicy.ts",
     "src/wake/voskEngine.ts",
+    "src/wake/recognizerHealth.ts",
     "src/wake/levelTracker.ts",
     "src/wake/dsp.ts",
     "src/triggerGate.ts",
