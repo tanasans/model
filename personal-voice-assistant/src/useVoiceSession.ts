@@ -69,6 +69,8 @@ export interface StartOptions {
    * 再生できたら再生時間（ms）を返す。使えなければ null（従来どおり Realtime API で挨拶を生成する）
    */
   localGreeting?: (g: { text: string; voice: string; speed: number }) => Promise<number | null>;
+  /** マイクと一時キーを並行して準備する（高速起動）。既定は false＝従来どおり順番に */
+  parallelPrep?: boolean;
 }
 
 /** 拍手で起動したのに話しかけられなかった場合、この秒数で自動終了する */
@@ -179,7 +181,7 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
           return g;
         });
       };
-      if (await micAlreadyAllowed()) {
+      if (options.parallelPrep && (await micAlreadyAllowed())) {
         setPhase('fetching-token');
         const [m, g] = await Promise.allSettled([micPromise, fetchToken()]);
         if (g.status === 'fulfilled') grant = g.value;
@@ -299,8 +301,7 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
       trace?.mark('connected');
 
       if (transport.callId) void reportCall(leaseId, transport.callId);
-      // スピーカーから実際に音が出た瞬間を測る（受信音声の音量だけ。内容は扱わない）
-      active.stopProbe = probeFirstSound(audio, () => trace?.mark('firstSound'));
+
       // 起動時の挨拶（KAITO.md の「起動時の挨拶」）。接続直後の 1 回だけで、会話の途中では言わない。空なら挨拶しない
       let readyAt = performance.now();
       if (grant.greetingInstructions) {
@@ -317,6 +318,8 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
           }
         }
         if (localMs === null) {
+          // スピーカーから実際に音が出た瞬間を測る（受信音声の音量だけ。内容は扱わない。最初の音が出たら止める）
+          active.stopProbe = probeFirstSound(audio, () => trace?.mark('firstSound'));
           try {
             trace?.mark('greetingRequested');
             trace?.note('Realtime の挨拶');
@@ -531,7 +534,7 @@ function probeFirstSound(audio: HTMLAudioElement, onSound: () => void): () => vo
           return;
         }
         if (performance.now() - started > 15_000) return stop();
-        window.setTimeout(tick, 5);
+        window.setTimeout(tick, 20);
       };
       tick();
     } catch {

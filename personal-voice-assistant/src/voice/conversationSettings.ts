@@ -21,12 +21,18 @@ export interface ConversationSettings {
   speechSpeed: SpeechSpeed;
   /** 起動時の挨拶を、作成済みのローカル音声で再生する（音声を作成していなければ従来どおり） */
   localGreeting: boolean;
+  /**
+   * 高速起動：起動音の鳴り終わりを待たず、会話用マイクと一時キーを並行して準備する。
+   * 既定は OFF（従来どおり、起動音の後に順番に準備）。実機で呼びかけの認識に影響が出たため選べるようにした
+   */
+  fastStart: boolean;
 }
 
 export const DEFAULT_CONVERSATION_SETTINGS: ConversationSettings = {
   audioProfile: DEFAULT_AUDIO_PROFILE,
   speechSpeed: DEFAULT_SPEECH_SPEED,
   localGreeting: true,
+  fastStart: false,
 };
 
 type KV = Pick<Storage, 'getItem' | 'setItem'>;
@@ -48,6 +54,7 @@ export function loadConversationSettings(store: KV | null = storage()): Conversa
       audioProfile: isAudioProfileId(v?.audioProfile) ? v.audioProfile : DEFAULT_AUDIO_PROFILE,
       speechSpeed: isSpeechSpeed(v?.speechSpeed) ? v.speechSpeed : DEFAULT_SPEECH_SPEED,
       localGreeting: v?.localGreeting !== false,
+      fastStart: v?.fastStart === true,
     };
   } catch {
     return { ...DEFAULT_CONVERSATION_SETTINGS };
@@ -56,7 +63,7 @@ export function loadConversationSettings(store: KV | null = storage()): Conversa
 
 export function saveConversationSettings(s: ConversationSettings, store: KV | null = storage()): void {
   try {
-    store?.setItem(CONVERSATION_SETTINGS_KEY, JSON.stringify({ audioProfile: s.audioProfile, speechSpeed: s.speechSpeed, localGreeting: s.localGreeting }));
+    store?.setItem(CONVERSATION_SETTINGS_KEY, JSON.stringify({ audioProfile: s.audioProfile, speechSpeed: s.speechSpeed, localGreeting: s.localGreeting, fastStart: s.fastStart }));
   } catch {
     /* 保存できなくても今回の画面では有効 */
   }

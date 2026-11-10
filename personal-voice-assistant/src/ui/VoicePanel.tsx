@@ -172,6 +172,8 @@ function GreetingSection({
   return (
     <div className="vp-greet">
       <Toggle label="起動時の挨拶をローカル音声で再生（高速）" checked={conv.settings.localGreeting} onChange={(v) => conv.update({ localGreeting: v })} />
+      <Toggle label="高速起動（起動音と並行して接続の準備）" checked={conv.settings.fastStart} onChange={(v) => conv.update({ fastStart: v })} />
+      <p className="muted small">約 0.4 秒速くなりますが、PC によっては呼びかけの認識に影響することがあります。認識しにくいときは OFF にしてください（既定 OFF）。</p>
       <p className="muted small">
         {info ? `作成済み：「${info.text}」（${info.voice}・速さ ${info.speed.toFixed(2)}・${info.seconds.toFixed(1)}秒）` : `この声（${greeting.voice ?? '—'}）・速さ ${speed.toFixed(2)} の挨拶の音声はまだありません。作成するまでは、従来どおり接続後に挨拶を生成します。`}
       </p>

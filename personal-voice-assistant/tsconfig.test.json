@@ -24,7 +24,6 @@
     "src/clap/calibration.ts",
     "src/wake/wakePolicy.ts",
     "src/wake/voskEngine.ts",
-    "src/wake/audioGate.ts",
     "src/wake/levelTracker.ts",
     "src/wake/dsp.ts",
     "src/triggerGate.ts",

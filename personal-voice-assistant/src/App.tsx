@@ -170,6 +170,8 @@ export function App() {
   startOptsRef.current = pickStartOpts();
   const useLocalGreetingRef = useRef(conversation.settings.localGreeting);
   useLocalGreetingRef.current = conversation.settings.localGreeting;
+  const fastStartRef = useRef(conversation.settings.fastStart);
+  fastStartRef.current = conversation.settings.fastStart;
   /** 起動時の共通オプション（計測・ローカル挨拶） */
   const startExtras = useCallback(
     (trace: LatencyTrace) => ({
@@ -191,10 +193,17 @@ export function App() {
         trace.mark('trigger');
         setTriggering(true); // ここで拍手・音声の待機を止め、マイクを解放する
         setRecognizedAt(Date.now());
-        void playChime(); // 鳴り終わりを待たずに接続の準備を始める
+        const fast = fastStartRef.current;
         try {
-          // 起動音（約 0.4 秒）がマイクに回り込まないよう、その間は会話用マイクの音を送らない
-          await start({ trigger: source, ...startOptsRef.current, ...startExtras(trace), muteMicUntil: performance.now() + CHIME_MS });
+          if (fast) {
+            // 高速起動：鳴り終わりを待たずに接続の準備を始める。起動音（約 0.4 秒）の間は会話用マイクの音を送らない
+            void playChime();
+            await start({ trigger: source, ...startOptsRef.current, ...startExtras(trace), muteMicUntil: performance.now() + CHIME_MS, parallelPrep: true });
+          } else {
+            // 従来どおり：起動音が鳴り終わってから、マイク → 一時キーの順に準備する
+            await playChime();
+            await start({ trigger: source, ...startOptsRef.current, ...startExtras(trace) });
+          }
         } finally {
           setTriggering(false);
         }
@@ -207,7 +216,7 @@ export function App() {
     const trace = new LatencyTrace('manual', addLatency);
     trace.mark('trigger');
     void gateRef.current.run(async () => {
-      await start({ ...startOptsRef.current, ...startExtras(trace) });
+      await start({ ...startOptsRef.current, ...startExtras(trace), parallelPrep: fastStartRef.current });
     });
   }, [start, startExtras, addLatency]);
   // 「認識しました」の表示（起動処理の開始から約 0.9 秒。その後は「接続中」）
