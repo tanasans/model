@@ -85,6 +85,15 @@ export interface HealthInfo {
   maxSessionSeconds: number;
   /** サーバーの既定の声（.env の REALTIME_VOICE） */
   defaultVoice: string;
+  /** KAITO のサーバーであること（ランチャーが多重起動の確認に使う） */
+  app: 'kaito';
+  version: string;
+  instanceId: string;
+  pid: number;
+  /** ランチャーから起動された本番用サーバーか */
+  desktopMode: boolean;
+  /** 画面が開いているか（直近のハートビート） */
+  uiOpen: boolean;
 }
 
 export interface ApiErrorBody {

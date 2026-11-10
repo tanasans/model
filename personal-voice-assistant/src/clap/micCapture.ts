@@ -23,6 +23,8 @@ export interface MicCapture {
   sampleRate: number;
   processing: MicProcessing;
   close(): void;
+  /** 音声処理が動いているか（ブラウザの自動再生の制限で止まっていると false） */
+  isRunning(): boolean;
 }
 
 const WORKLET_SOURCE = `
@@ -98,7 +100,14 @@ export async function openRawMic(onSamples: (samples: Float32Array) => void): Pr
     const st = (track?.getSettings() ?? {}) as MediaTrackSettings & { voiceIsolation?: boolean };
     const bool = (v: unknown) => (typeof v === 'boolean' ? v : null);
     const c = ctx;
+    if (c.state !== 'running') {
+      // ブラウザの制限（ユーザーの操作前）で音声処理が止まっている：最初のクリック・キー操作で再開する
+      const resume = () => void c.resume().catch(() => undefined);
+      window.addEventListener('pointerdown', resume, { once: true });
+      window.addEventListener('keydown', resume, { once: true });
+    }
     return {
+      isRunning: () => c.state === 'running',
       sampleRate: c.sampleRate,
       processing: {
         autoGainControl: bool(st.autoGainControl),

@@ -184,6 +184,7 @@ const KNOWN_STORAGE_KEYS = [
   'pva.wakeSettings.v1',
   'pva.voice.v1',
   'pva.ui.v1',
+  'pva.standby.v1',
   'pva.conversation.v1',
   'pva.latency.v1',
 ].sort();

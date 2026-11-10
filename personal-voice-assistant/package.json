@@ -1,6 +1,6 @@
 {
   "name": "personal-voice-assistant",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "自分専用AI秘書（日本語音声・ローカルMVP）",
   "scripts": {
     "dev": "concurrently -k -n server,web -c blue,green \"npm:dev:server\" \"npm:dev:web\"",
@@ -13,7 +13,11 @@
     "setup:wake": "node scripts/setup-wake-model.mjs",
     "persona:promote": "tsx scripts/persona-promote.ts",
     "bench:memory": "tsx scripts/bench-memory-search.ts",
-    "bench:clap": "tsx scripts/bench-clap-typing.ts"
+    "bench:clap": "tsx scripts/bench-clap-typing.ts",
+    "desktop:install": "npm run build && node launcher/kaito-launcher.mjs install",
+    "desktop:start": "node launcher/kaito-launcher.mjs start",
+    "desktop:stop": "node launcher/kaito-launcher.mjs stop",
+    "desktop:status": "node launcher/kaito-launcher.mjs status"
   },
   "author": "",
   "license": "UNLICENSED",

@@ -19,6 +19,7 @@ import { isInsideApp, resolveDataDir } from './memory/dataDir.js';
 import { DB_FILE, openMemoryStore } from './memory/store.js';
 import { memoryRouter, type MemoryHolder } from './memory/routes.js';
 import { buildMemoryInstructions } from '../shared/memory.js';
+import { desktopRouter, newDesktopState, otherInstance, removeLock, uiOpen, writeLock } from './desktop/desktop.js';
 import { isPersonaKey, type PersonaOverrides } from '../shared/persona.js';
 import OpenAI from 'openai';
 import {
@@ -89,6 +90,26 @@ const DATA_DIR = resolveDataDir();
 /** KAITO.md（基本設定）と KAITO.local.md（個人設定・データ領域）の場所 */
 const PERSONA_PATHS = defaultPersonaPaths(APP_DIR, DATA_DIR);
 const personaMigrated = migrateLegacyPersona(APP_DIR, PERSONA_PATHS);
+/** デスクトップ常駐（ランチャーから起動された本番用サーバー） */
+const DESKTOP_MODE = process.env.KAITO_DESKTOP === '1';
+const APP_VERSION = ((): string => {
+  try {
+    return String(JSON.parse(readFileSync(path.join(APP_DIR, 'package.json'), 'utf8')).version ?? '');
+  } catch {
+    return '';
+  }
+})();
+const desktop = newDesktopState();
+
+// 多重起動防止：ほかの KAITO サーバーが動いていれば、起動しない（ほかのプロセスは終了しない）
+{
+  mkdirSync(DATA_DIR, { recursive: true });
+  const other = await otherInstance(DATA_DIR);
+  if (other) {
+    console.error(`[${new Date().toISOString()}] KAITO のサーバーはすでに起動しています（PID ${other.pid}・ポート ${other.port}）。二重には起動しません。`);
+    process.exit(3);
+  }
+}
 
 // 長期記憶（SQLite）。開けなくてもアプリのほかの機能は動かす
 const memory: MemoryHolder = await (async () => {
@@ -172,6 +193,12 @@ app.get('/api/health', (_req, res) => {
     model: MODEL,
     maxSessionSeconds: MAX_SESSION_SECONDS,
     defaultVoice: VOICE,
+    app: 'kaito',
+    version: APP_VERSION,
+    instanceId: desktop.instanceId,
+    pid: process.pid,
+    desktopMode: DESKTOP_MODE,
+    uiOpen: uiOpen(desktop),
   };
   res.json(body);
 });
@@ -411,6 +438,12 @@ function memoryGuard(req: Request, res: Response, next: NextFunction): void {
 }
 app.use('/api/memory', memoryRouter(memory, memoryGuard, log));
 
+// ---------- デスクトップ常駐（状態・終了・自動起動の登録） ----------
+app.use(
+  '/api/desktop',
+  desktopRouter({ state: desktop, appDir: APP_DIR, dataDir: DATA_DIR, port: PORT, version: APP_VERSION, desktopMode: DESKTOP_MODE, guard: memoryGuard, exit: (reason) => shutdown(reason), log }),
+);
+
 app.post('/api/session', requireLocalOrigin, express.json({ limit: '1kb' }), async (req, res) => {
   if (!req.is('application/json')) {
     sendError(res, 400, 'BAD_REQUEST', 'Content-Type が不正です。');
@@ -560,24 +593,34 @@ const server = app.listen(PORT, HOST, () => {
   log(`memory: ${memory.store ? `有効（保存先 ${memory.dbPath}）` : `無効：${memory.error}`}`);
   for (const w of memory.warnings) log(`memory: ${w}`);
   if (personaMigrated) log(`persona: 以前の個人設定を ${PERSONA_PATHS.local} に引き継ぎました（元のファイルは残しています）`);
+  writeLock(DATA_DIR, { pid: process.pid, port: PORT, instanceId: desktop.instanceId, startedAt: desktop.startedAt, appDir: APP_DIR, version: APP_VERSION });
+  log(`instance: pid=${process.pid} version=${APP_VERSION} desktop=${DESKTOP_MODE}`);
 });
 server.on('error', (err) => {
-  log(`server error: ${describeError(err)}`);
-  process.exit(1);
+  const code = (err as NodeJS.ErrnoException).code;
+  log(code === 'EADDRINUSE' ? `起動できません：ポート ${PORT} はほかのアプリが使用しています` : `server error: ${describeError(err)}`);
+  process.exit(code === 'EADDRINUSE' ? 2 : 1);
 });
 
-function shutdown(): void {
+let exiting = false;
+/** 終了：会話の切断 → 記憶（SQLite）を閉じて保存を確定 → ロック削除 → サーバー停止 */
+function shutdown(reason = 'signal'): void {
+  if (exiting) return;
+  exiting = true;
+  log(`shutdown (${reason})`);
   if (activeLease) releaseLease(activeLease.id, 'shutdown');
   try {
     memory.store?.close();
   } catch {
     /* 終了時は無視 */
   }
+  removeLock(DATA_DIR, desktop.instanceId);
   server.close(() => process.exit(0));
+  // 会話の切断（hangup）の送信を少し待ってから終了する
   setTimeout(() => process.exit(0), 2_000).unref();
 }
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 // ---------- OpenAI 呼び出し ----------
 interface SecretOptions {

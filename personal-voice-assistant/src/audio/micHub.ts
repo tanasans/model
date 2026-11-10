@@ -33,13 +33,15 @@ export interface MicHubInfo {
   /** 直近に受け取った音声のレベル（dBFS）。マイク未使用なら null */
   levelDb: number | null;
   processing: MicProcessing | null;
+  /** マイクは開いているが、ブラウザの制限で音声処理が止まっている（画面のクリックで再開） */
+  blocked: boolean;
 }
 
 /** 画面表示用：待機用マイクの状態（実測値のみ） */
 export function getMicHubInfo(): MicHubInfo {
   return capture
-    ? { open: true, levelDb: lastLevelDb, processing: capture.processing }
-    : { open: false, levelDb: null, processing: null };
+    ? { open: true, levelDb: lastLevelDb, processing: capture.processing, blocked: !capture.isRunning() }
+    : { open: false, levelDb: null, processing: null, blocked: false };
 }
 
 export async function subscribeMic(onSamples: Listener): Promise<MicSubscription> {

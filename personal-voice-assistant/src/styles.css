@@ -2355,3 +2355,18 @@ input[type='range']::-moz-range-thumb {
 .k-clap-history .k-src {
   margin-right: 6px;
 }
+
+/* デスクトップ版：終了後の表示 */
+.desk-closed {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(8, 9, 12, 0.94);
+  color: var(--text);
+  font-size: 1.1rem;
+}

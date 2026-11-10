@@ -16,6 +16,8 @@ import { SideDrawer, type DrawerTab } from './ui/SideDrawer';
 import { VoicePanel } from './ui/VoicePanel';
 import { PersonaPanel } from './ui/PersonaPanel';
 import { MemoryPanel } from './ui/MemoryPanel';
+import { DesktopPanel } from './ui/DesktopPanel';
+import { launchMode, useDesktop } from './desktop/useDesktop';
 import { useMemory } from './memory/useMemory';
 import { ConversationLogger } from './memory/conversationLogger';
 import { createMemoryTools } from './memory/memoryTools';
@@ -32,6 +34,23 @@ import { useConversationSettings } from './voice/conversationSettings';
 import { useWakeController } from './wake/useWakeController';
 
 const UI_KEY = 'pva.ui.v1';
+/** 待機（音声・拍手）の ON/OFF の記録。デスクトップ版の起動時に、この状態で待機を再開する */
+const STANDBY_KEY = 'pva.standby.v1';
+function loadStandbyPref(): { wake: boolean; clap: boolean } {
+  try {
+    const v = JSON.parse(localStorage.getItem(STANDBY_KEY) ?? '{}') as { wake?: unknown; clap?: unknown };
+    return { wake: v.wake === true, clap: v.clap === true };
+  } catch {
+    return { wake: false, clap: false };
+  }
+}
+function saveStandbyPref(p: { wake: boolean; clap: boolean }): void {
+  try {
+    localStorage.setItem(STANDBY_KEY, JSON.stringify(p));
+  } catch {
+    /* 保存できなくても動作には影響しない */
+  }
+}
 /** 起動音の長さ（ms）。この間は会話用マイクの音を送らない */
 const CHIME_MS = 450;
 function loadLowMotion(): boolean {
@@ -234,6 +253,47 @@ export function App() {
   const standbyPaused = phase !== 'idle' || triggering;
   const wake = useWakeController({ paused: standbyPaused, testMode, onWakeStart: (d) => triggerStart('wake', d) });
   const clap = useClapController({ paused: standbyPaused, testMode, onClapStart: () => triggerStart('clap') });
+
+  // ---------- デスクトップ版 ----------
+  const launch = useMemo(() => launchMode(), []);
+  // 利用者が待機を ON/OFF したときだけ記録する（終了処理による OFF は記録しない＝次回の起動で再開する）
+  const setWakeByUser = (v: boolean) => {
+    wake.setOn(v);
+    saveStandbyPref({ ...loadStandbyPref(), wake: v });
+  };
+  const setClapByUser = (v: boolean) => {
+    clap.setStandbyOn(v);
+    saveStandbyPref({ ...loadStandbyPref(), clap: v });
+  };
+  // デスクトップから起動したら、記録した状態で待機を再開する（OpenAI には接続しない・挨拶もしない）
+  useEffect(() => {
+    if (!launch) return;
+    const p = loadStandbyPref();
+    if (p.wake) wake.setOn(true);
+    if (p.clap) clap.setStandbyOn(true);
+  }, [launch]);
+  const desktopCtl = useDesktop({
+    loadStatus: drawer === 'desktop',
+    onShutdown: async () => {
+      // 終了の順番：待機の停止 → マイクの解放 → 会話の終了（会話履歴の送信を含む）
+      wake.setOn(false);
+      clap.setStandbyOn(false);
+      await stop();
+      await new Promise((r) => setTimeout(r, 600));
+    },
+  });
+  // ブラウザの制限で音声処理が止まっているか（自動起動の直後など。画面をクリックすると再開する）
+  const [audioBlocked, setAudioBlocked] = useState(false);
+  useEffect(() => {
+    const id = window.setInterval(() => setAudioBlocked(getMicHubInfo().blocked), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  const [autostartNotice, setAutostartNotice] = useState(launch === 'autostart');
+  useEffect(() => {
+    if (!autostartNotice) return;
+    const t = window.setTimeout(() => setAutostartNotice(false), 15_000);
+    return () => window.clearTimeout(t);
+  }, [autostartNotice]);
   onSessionEndRef.current = ({ trigger, connected, userSpoke }) => {
     if (trigger !== 'clap') return;
     clap.markOutcome(!connected ? 'not-started' : userSpoke ? 'spoke' : 'no-speech');
@@ -322,6 +382,12 @@ export function App() {
 
   return (
     <div className={`k6 state-${view.state.toLowerCase()} ${drawer ? 'drawer-open' : ''}`}>
+      {desktopCtl.closed && (
+        <div className="desk-closed" role="alert">
+          <p>KAITO を終了しました。</p>
+          <p className="muted small">このウィンドウは閉じてかまいません（デスクトップの「KAITO」アイコンでまた起動できます）。</p>
+        </div>
+      )}
       <TacticalBackdrop lowMotion={lowMotion} />
       <CommandHeader server={server} phase={phase} />
       <main className="stage" aria-live="polite">
@@ -333,13 +399,19 @@ export function App() {
           }}
           core={<CommandCore view={view} readLevel={readCoreLevel} burstKey={burstKey} pulseKey={pulseKey} detail={remaining} />}
         />
-        {(clap.guardNotice ?? view.notice) && <p className="stage-notice">{clap.guardNotice ?? view.notice}</p>}
+        {audioBlocked ? (
+          <p className="stage-notice">ブラウザの制限で待機の音声処理が止まっています。画面をクリックすると待機が始まります。</p>
+        ) : autostartNotice && (wake.on || clap.standbyOn) ? (
+          <p className="stage-notice">ログイン時に起動しました。待機中です（会話は呼びかけ・拍手で始まります）。</p>
+        ) : (
+          (clap.guardNotice ?? view.notice) && <p className="stage-notice">{clap.guardNotice ?? view.notice}</p>
+        )}
       </main>
       <CommandBar
         wakeOn={wake.on}
-        setWakeOn={wake.setOn}
+        setWakeOn={setWakeByUser}
         clapOn={clap.standbyOn}
-        setClapOn={clap.setStandbyOn}
+        setClapOn={setClapByUser}
         phase={phase}
         triggering={triggering}
         test={testMode ? { wake: wake.testCount, clap: clap.testCount } : null}
@@ -355,6 +427,7 @@ export function App() {
         )}
         {drawer === 'persona' && <PersonaPanel p={persona} />}
         {drawer === 'memory' && <MemoryPanel m={memory} busy={phase !== 'idle'} />}
+        {drawer === 'desktop' && <DesktopPanel d={desktopCtl} busy={phase !== 'idle'} />}
         {drawer === 'detail' && (
           <DetailSettings
             wake={wake}
