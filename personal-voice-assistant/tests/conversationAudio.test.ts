@@ -95,9 +95,9 @@ function memoryStore(init: Record<string, string> = {}) {
 test('設定の保存と復元: 保存した値が次回起動時に復元される', () => {
   const st = memoryStore();
   assert.deepEqual(loadConversationSettings(st), DEFAULT_CONVERSATION_SETTINGS, '未保存なら既定（従来どおり）');
-  saveConversationSettings({ audioProfile: 'tv_strong', speechSpeed: 0.95, localGreeting: false, fastStart: true }, st);
-  assert.deepEqual(JSON.parse(st.m.get(CONVERSATION_SETTINGS_KEY)!), { audioProfile: 'tv_strong', speechSpeed: 0.95, localGreeting: false, fastStart: true });
-  assert.deepEqual(loadConversationSettings(st), { audioProfile: 'tv_strong', speechSpeed: 0.95, localGreeting: false, fastStart: true });
+  saveConversationSettings({ audioProfile: 'tv_strong', speechSpeed: 0.95, localGreeting: false, fastStart: true, earlyGreeting: true }, st);
+  assert.deepEqual(JSON.parse(st.m.get(CONVERSATION_SETTINGS_KEY)!), { audioProfile: 'tv_strong', speechSpeed: 0.95, localGreeting: false, fastStart: true, earlyGreeting: true });
+  assert.deepEqual(loadConversationSettings(st), { audioProfile: 'tv_strong', speechSpeed: 0.95, localGreeting: false, fastStart: true, earlyGreeting: true });
   // 以前の版で保存した設定（localGreeting なし）は既定（ON：作成済みの音声があるときだけ使う）で読み込む
   st.m.set(CONVERSATION_SETTINGS_KEY, JSON.stringify({ audioProfile: 'tv_light', speechSpeed: 1 }));
   assert.equal(loadConversationSettings(st).localGreeting, true);
@@ -112,12 +112,12 @@ test('設定の保存と復元: 壊れた・不正な保存データは既定に
   );
   assert.deepEqual(
     loadConversationSettings(memoryStore({ [CONVERSATION_SETTINGS_KEY]: JSON.stringify({ audioProfile: 'tv_light' }) })),
-    { audioProfile: 'tv_light', speechSpeed: 1, localGreeting: true, fastStart: true },
+    { audioProfile: 'tv_light', speechSpeed: 1, localGreeting: true, fastStart: true, earlyGreeting: true },
     '片方だけ正しければその値だけ使う',
   );
   const throwing = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } };
   assert.deepEqual(loadConversationSettings(throwing), DEFAULT_CONVERSATION_SETTINGS);
-  assert.doesNotThrow(() => saveConversationSettings({ audioProfile: 'tv_light', speechSpeed: 0.9, localGreeting: true, fastStart: false }, throwing));
+  assert.doesNotThrow(() => saveConversationSettings({ audioProfile: 'tv_light', speechSpeed: 0.9, localGreeting: true, fastStart: false, earlyGreeting: true }, throwing));
   assert.deepEqual(loadConversationSettings(null), DEFAULT_CONVERSATION_SETTINGS);
 });
 

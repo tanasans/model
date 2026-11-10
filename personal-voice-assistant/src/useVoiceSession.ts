@@ -83,6 +83,11 @@ export interface StartOptions {
   localGreeting?: (g: { text: string; voice: string; speed: number }) => Promise<number | null>;
   /** マイクと一時キーを並行して準備する（高速起動）。既定は false＝従来どおり順番に */
   parallelPrep?: boolean;
+  /**
+   * ローカル挨拶を接続の完了を待たずに流し始める（OpenAI からの接続の応答が届いた時点。起動音の後）。
+   * 挨拶が鳴っている間に接続が完了するので、最初の声が早く聞こえる。既定は false＝接続の完了後に流す
+   */
+  earlyGreeting?: boolean;
 }
 
 /** 拍手で起動したのに話しかけられなかった場合、この秒数で自動終了する（誤起動時の接続時間を短くする） */
@@ -223,6 +228,29 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
 
       // 3) WebRTC で Realtime API に接続
       setPhase('connecting');
+      // ローカル挨拶（1 回だけ）。再生中はマイクの音を送らない（挨拶の回り込み防止）
+      const g0 = grant;
+      const micStream = stream;
+      let greetingPlay: Promise<{ t: number; ms: number | null }> | null = null;
+      const startLocalGreeting = () => {
+        if (greetingPlay || !options.localGreeting || !g0.greetingInstructions || !g0.greetingText) return;
+        const t = performance.now();
+        greetingPlay = options
+          .localGreeting({ text: g0.greetingText, voice: g0.voice, speed: g0.speechSpeed ?? 1 })
+          .catch(() => null)
+          .then((ms) => {
+            if (ms !== null) muteFor(micStream, ms + 150);
+            return { t, ms };
+          });
+      };
+      let earlyTimer: number | null = null;
+      const startEarlyGreeting = () => {
+        if (!options.earlyGreeting || greetingPlay || earlyTimer !== null || cancelled()) return;
+        // 起動音と重ならないよう、起動音が鳴り終わってから
+        earlyTimer = window.setTimeout(() => {
+          if (!cancelled()) startLocalGreeting();
+        }, Math.max(0, (options.muteMicUntil ?? 0) - performance.now()));
+      };
       const audio = new Audio();
       audio.autoplay = true;
       // REALTIME_WEBRTC_URL（サーバーの環境変数）は計測用の模擬サーバーに接続するためだけに使う。通常は OpenAI
@@ -235,7 +263,10 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
         changePeerConnection: async (pc: RTCPeerConnection) => {
           trace?.mark('offer');
           pc.addEventListener('signalingstatechange', () => {
-            if (pc.signalingState === 'stable') trace?.mark('answer');
+            if (pc.signalingState === 'stable') {
+              trace?.mark('answer');
+              startEarlyGreeting();
+            }
           });
           pc.addEventListener('connectionstatechange', () => {
             if (pc.connectionState === 'connected') trace?.mark('pcConnected');
@@ -353,15 +384,17 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
       let readyAt = performance.now();
       if (grant.greetingInstructions) {
         let localMs: number | null = null;
-        if (options.localGreeting && grant.greetingText) {
-          // ローカルの音声で挨拶（生成を待たない）。再生中はマイクの音を送らない（挨拶の回り込み防止）
-          const t = performance.now();
-          localMs = await options.localGreeting({ text: grant.greetingText, voice: grant.voice, speed: grant.speechSpeed ?? 1 }).catch(() => null);
-          if (localMs !== null) {
+        // ローカルの音声で挨拶（生成を待たない）。接続中にすでに流し始めていればそれを使う
+        if (earlyTimer !== null && !greetingPlay) window.clearTimeout(earlyTimer); // 起動音の途中で接続できた
+        const early = Boolean(greetingPlay);
+        startLocalGreeting();
+        if (greetingPlay) {
+          const { t, ms } = await (greetingPlay as Promise<{ t: number; ms: number | null }>);
+          localMs = ms;
+          if (ms !== null) {
             trace?.mark('firstSound', t);
-            trace?.note('ローカル挨拶');
-            muteFor(active.stream, localMs + 150);
-            readyAt = t + localMs + 150;
+            trace?.note(early ? 'ローカル挨拶（接続中に再生）' : 'ローカル挨拶');
+            readyAt = Math.max(performance.now(), t + ms + 150);
           }
         }
         if (localMs === null) {

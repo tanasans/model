@@ -191,6 +191,8 @@ export function App() {
   startOptsRef.current = pickStartOpts();
   const useLocalGreetingRef = useRef(conversation.settings.localGreeting);
   useLocalGreetingRef.current = conversation.settings.localGreeting;
+  const earlyGreetingRef = useRef(conversation.settings.earlyGreeting);
+  earlyGreetingRef.current = conversation.settings.earlyGreeting;
   const fastStartRef = useRef(conversation.settings.fastStart);
   fastStartRef.current = conversation.settings.fastStart;
   /** 起動時の共通オプション（計測・ローカル挨拶） */
@@ -198,6 +200,7 @@ export function App() {
     (trace: LatencyTrace) => ({
       trace,
       ...(useLocalGreetingRef.current ? { localGreeting: (g: { text: string; voice: string; speed: number }) => greetingRef.current.play(g) } : {}),
+      earlyGreeting: earlyGreetingRef.current,
     }),
     [],
   );

@@ -20,6 +20,7 @@ import { DB_FILE, openMemoryStore } from './memory/store.js';
 import { memoryRouter, type MemoryHolder } from './memory/routes.js';
 import { createMemoryAi } from './memory/ai.js';
 import { buildMemoryInstructions } from '../shared/memory.js';
+import { createPrewarm } from './realtime/prewarm.js';
 import { desktopRouter, newDesktopState, otherInstance, removeLock, uiOpen, writeLock } from './desktop/desktop.js';
 import { isPersonaKey, type PersonaOverrides } from '../shared/persona.js';
 import OpenAI from 'openai';
@@ -139,6 +140,8 @@ function memoryInstructions(): string {
 
 const API_KEY = (process.env.OPENAI_API_KEY ?? '').trim();
 const openai = API_KEY ? new OpenAI({ apiKey: API_KEY, maxRetries: 1, timeout: 15_000 }) : null;
+// 起動直後の最初の会話を速くする：起動時・スリープ復帰時だけ OpenAI への通信を準備する（API キーなし・料金なし）。REALTIME_PREWARM=off で無効
+const PREWARM = openai && enumEnv('REALTIME_PREWARM', ['on', 'off'] as const, 'on') === 'on' ? createPrewarm({ url: `${openai.baseURL.replace(/\/$/, '')}/models`, log: (m) => log(m) }) : null;
 
 const ALLOWED_ORIGINS = new Set([
   'http://localhost:5173',
@@ -675,6 +678,10 @@ const server = app.listen(PORT, HOST, () => {
   if (personaMigrated) log(`persona: 以前の個人設定を ${PERSONA_PATHS.local} に引き継ぎました（元のファイルは残しています）`);
   writeLock(DATA_DIR, { pid: process.pid, port: PORT, instanceId: desktop.instanceId, startedAt: desktop.startedAt, appDir: APP_DIR, version: APP_VERSION });
   log(`instance: pid=${process.pid} version=${APP_VERSION} desktop=${DESKTOP_MODE}`);
+  if (PREWARM) {
+    void PREWARM.warm('startup');
+    PREWARM.watchResume();
+  }
 });
 server.on('error', (err) => {
   const code = (err as NodeJS.ErrnoException).code;

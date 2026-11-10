@@ -26,6 +26,8 @@ export interface ConversationSettings {
    * 既定は ON（実機で、PC の再起動後は ON でも呼びかけに反応することを確認）。OFF にすると従来どおり起動音の後に順番に準備する
    */
   fastStart: boolean;
+  /** ローカル挨拶を接続の完了を待たずに流す（接続中に挨拶）。既定 ON。ローカル挨拶が OFF・未作成なら効果なし */
+  earlyGreeting: boolean;
 }
 
 export const DEFAULT_CONVERSATION_SETTINGS: ConversationSettings = {
@@ -33,6 +35,7 @@ export const DEFAULT_CONVERSATION_SETTINGS: ConversationSettings = {
   speechSpeed: DEFAULT_SPEECH_SPEED,
   localGreeting: true,
   fastStart: true,
+  earlyGreeting: true,
 };
 
 type KV = Pick<Storage, 'getItem' | 'setItem'>;
@@ -55,6 +58,7 @@ export function loadConversationSettings(store: KV | null = storage()): Conversa
       speechSpeed: isSpeechSpeed(v?.speechSpeed) ? v.speechSpeed : DEFAULT_SPEECH_SPEED,
       localGreeting: v?.localGreeting !== false,
       fastStart: v?.fastStart !== false,
+      earlyGreeting: v?.earlyGreeting !== false,
     };
   } catch {
     return { ...DEFAULT_CONVERSATION_SETTINGS };
@@ -63,7 +67,7 @@ export function loadConversationSettings(store: KV | null = storage()): Conversa
 
 export function saveConversationSettings(s: ConversationSettings, store: KV | null = storage()): void {
   try {
-    store?.setItem(CONVERSATION_SETTINGS_KEY, JSON.stringify({ audioProfile: s.audioProfile, speechSpeed: s.speechSpeed, localGreeting: s.localGreeting, fastStart: s.fastStart }));
+    store?.setItem(CONVERSATION_SETTINGS_KEY, JSON.stringify({ audioProfile: s.audioProfile, speechSpeed: s.speechSpeed, localGreeting: s.localGreeting, fastStart: s.fastStart, earlyGreeting: s.earlyGreeting }));
   } catch {
     /* 保存できなくても今回の画面では有効 */
   }
