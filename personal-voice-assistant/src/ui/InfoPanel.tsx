@@ -81,6 +81,18 @@ export function InfoPanel({ wake, clap, lines, connected, errors, notice, latenc
       </section>
 
       <MicCard />
+      {wake.wake.level && (
+        <section className={`k-card ${wake.wake.level.backlogSec > 1.5 ? 'k-card-alert' : ''}`}>
+          <h2 className="k-card-title">
+            <span>音声認識の遅れ</span>
+            <span className="k-card-en">RECOGNIZER</span>
+          </h2>
+          <p className="k-empty">
+            {wake.wake.level.backlogSec.toFixed(1)} 秒（まだ処理していない音声）{wake.wake.restarts ? ` ／ やり直し ${wake.wake.restarts} 回` : ''}
+          </p>
+          {wake.wake.level.backlogSec > 1.5 && <p className="k-notice">PC の処理が追いついていません。遅れが大きいときは自動で認識をやり直します。</p>}
+        </section>
+      )}
 
       <LatencyCard list={latency} onClear={onClearLatency} />
 

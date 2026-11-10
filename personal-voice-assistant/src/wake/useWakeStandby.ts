@@ -46,13 +46,24 @@ type NewEntry =
 /** 起動後（または 2 つの認識器が同じ呼びかけを拾ったとき）に重ねて起動しない時間 */
 const COOLDOWN_MS = 2500;
 const LOG_MAX = 30;
+/**
+ * 認識の遅れ（まだ処理されていない音声の長さ）の上限。
+ * PC の処理が追いつかず遅れがたまると、呼びかけから何十秒も後に認識されることがある（実機で確認）。
+ *  - STALE_SEC を超えて遅れた認識結果では起動しない（話してからだいぶ後に勝手に起動しないため）
+ *  - RESTART_SEC を超えたら、たまった音声を捨てて認識をやり直す
+ */
+export const STALE_SEC = 2.5;
+export const RESTART_SEC = 4;
 
 export function useWakeStandby(opts: WakeStandbyOptions) {
   const { enabled, paused, mode, noiseReduction } = opts;
   const [status, setStatus] = useState<WakeStatus>('off');
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<WakeLogEntry[]>([]);
-  const [level, setLevel] = useState<{ levelDb: number; floorDb: number } | null>(null);
+  const [level, setLevel] = useState<{ levelDb: number; floorDb: number; backlogSec: number } | null>(null);
+  /** 認識のやり直し（値が変わると認識器を作り直す） */
+  const [restartKey, setRestartKey] = useState(0);
+  const [restarts, setRestarts] = useState(0);
   const onWakeRef = useRef(opts.onWake);
   onWakeRef.current = opts.onWake;
   const sensRef = useRef(opts.sensitivity);
@@ -108,6 +119,12 @@ export function useWakeStandby(opts: WakeStandbyOptions) {
         }
         const ev = evaluateFinal(final, spec, tracker, sensRef.current);
         const d = ev ? { ...ev, timing } : null;
+        // 認識が大きく遅れている（話してからだいぶ時間が経っている）結果では起動しない
+        const lag = recs?.backlogSec() ?? 0;
+        if (d?.accepted && lag > STALE_SEC) {
+          push({ kind: 'note', text: `認識が ${lag.toFixed(1)} 秒遅れていたため、起動しませんでした（古い呼びかけの可能性）` });
+          return;
+        }
         if (!d) {
           // 呼びかけの言葉を含まない確定結果（似た言葉など）だけを表示する。
           // （「両方」モードでは 2 つの認識器が担当外の言い方を受け取るが、それは表示しない）
@@ -149,7 +166,22 @@ export function useWakeStandby(opts: WakeStandbyOptions) {
         return;
       }
       pp = new WakePreprocessor(mic.sampleRate, { noiseReduction });
-      timer = window.setInterval(() => setLevel({ levelDb: tracker.lastDb, floorDb: tracker.floorDb() }), 100);
+      let over = 0;
+      timer = window.setInterval(() => {
+        const backlogSec = recs?.backlogSec() ?? 0;
+        setLevel({ levelDb: tracker.lastDb, floorDb: tracker.floorDb(), backlogSec });
+        // 遅れが続けてたまったら、認識をやり直す（音声認識の処理を止めて読み込み直す＝たまった音声を捨てる）
+        over = backlogSec > RESTART_SEC ? over + 1 : 0;
+        if (over >= 10 && !cancelled) {
+          push({ kind: 'note', text: `音声認識が ${backlogSec.toFixed(1)} 秒遅れたため、認識をやり直しました（PC の処理が追いついていません）` });
+          cancelled = true;
+          recs?.dispose();
+          recs = null;
+          unloadModel();
+          setRestarts((n) => n + 1);
+          setRestartKey((k) => k + 1);
+        }
+      }, 100);
       setStatus('listening');
     })().catch((e: unknown) => {
       if (cancelled) return;
@@ -167,7 +199,7 @@ export function useWakeStandby(opts: WakeStandbyOptions) {
       recs?.dispose();
       mic?.close();
     };
-  }, [active, enabled, mode, noiseReduction]);
+  }, [active, enabled, mode, noiseReduction, restartKey]);
 
   // 音声待機 OFF・タブを閉じるときは、認識モデルのメモリも解放する
   useEffect(() => {
@@ -179,5 +211,5 @@ export function useWakeStandby(opts: WakeStandbyOptions) {
     return () => window.removeEventListener('pagehide', onPageHide);
   }, []);
 
-  return { status, error, log, level, clearLog: () => setLog([]) };
+  return { status, error, log, level, restarts, clearLog: () => setLog([]) };
 }

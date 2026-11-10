@@ -47,28 +47,50 @@ export function unloadModel(): void {
 
 type Recognizer = InstanceType<Model['KaldiRecognizer']>;
 
-/** モードに応じた認識器（1〜2 個）に同じ音声を流す */
+/**
+ * モードに応じた認識器（1〜2 個）に同じ音声を流す。
+ * 認識（別スレッド）が音声の到着に追いつけているかを測るため、送った音声と処理が終わった音声の長さを数える
+ * （vosk-browser は音声のかたまりを 1 つ処理するごとに result か partialresult を返す）。
+ */
 export class WakeRecognizers {
-  private readonly recs: Array<{ spec: RecognizerSpec; rec: Recognizer }>;
+  private readonly recs: Array<{ spec: RecognizerSpec; rec: Recognizer; pending: number[]; pendingSamples: number }>;
   private disposed = false;
 
   constructor(model: Model, specs: RecognizerSpec[], onFinal: (spec: RecognizerSpec, final: VoskFinal) => void) {
     this.recs = specs.map((spec) => {
       const rec = new model.KaldiRecognizer(WAKE_SAMPLE_RATE, JSON.stringify(spec.grammar));
       rec.setWords(true);
+      const entry = { spec, rec, pending: [] as number[], pendingSamples: 0 };
+      const processed = () => {
+        const n = entry.pending.shift();
+        if (n !== undefined) entry.pendingSamples -= n;
+      };
       // 確定結果のみを使う（途中結果は誤起動が多いため使わない）
       rec.on('result', (msg) => {
         if (this.disposed || msg.event !== 'result') return;
+        processed();
         const r = msg.result;
         if (r.text) onFinal(spec, { text: r.text, result: r.result });
       });
-      return { spec, rec };
+      rec.on('partialresult', () => {
+        if (!this.disposed) processed();
+      });
+      return entry;
     });
+  }
+
+  /** 認識の遅れ（まだ処理されていない音声の長さ、秒）。複数の認識器のうち大きい方 */
+  backlogSec(): number {
+    return Math.max(0, ...this.recs.map((r) => r.pendingSamples / WAKE_SAMPLE_RATE));
   }
 
   accept(samples16k: Float32Array): void {
     if (this.disposed || samples16k.length === 0) return;
-    for (const { rec } of this.recs) rec.acceptWaveformFloat(samples16k, WAKE_SAMPLE_RATE);
+    for (const r of this.recs) {
+      r.pending.push(samples16k.length);
+      r.pendingSamples += samples16k.length;
+      r.rec.acceptWaveformFloat(samples16k, WAKE_SAMPLE_RATE);
+    }
   }
 
   dispose(): void {
