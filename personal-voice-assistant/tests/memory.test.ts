@@ -52,9 +52,13 @@ test('GitHub に記憶データ・バックアップ・個人設定が入らな�
   assert.equal(ignored('KAITO.md'), false);
 });
 
-test('記憶の処理は OpenAI に接続しない（server/memory は openai を読み込まない）', () => {
+test('記憶の処理は OpenAI に接続しない（要約・意味検索の ai.ts だけが使う。設定で ON にしたときのみ）', () => {
   const dir = path.join(APP, 'server', 'memory');
-  for (const f of readdirSync(dir)) assert.doesNotMatch(readFileSync(path.join(dir, f), 'utf8'), /from ['"]openai['"]|api\.openai\.com/, f);
+  for (const f of readdirSync(dir)) {
+    if (f === 'ai.ts') continue;
+    assert.doesNotMatch(readFileSync(path.join(dir, f), 'utf8'), /from ['"]openai['"]|api\.openai\.com/, f);
+  }
+  assert.match(readFileSync(path.join(dir, 'ai.ts'), 'utf8'), /import type OpenAI/, 'ai.ts は型だけを読み込み、接続はサーバーの共通の OpenAI を使う');
 });
 
 // ---------- 長期記憶 ----------

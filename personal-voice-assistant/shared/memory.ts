@@ -71,6 +71,10 @@ export interface MemorySettings {
   includePreferences: boolean;
   /** 会話全体からの自動的な記憶抽出（v1 では未実装。常に false） */
   autoExtract: boolean;
+  /** 会話の自動要約（会話の終了後、文字起こしを OpenAI に送って 2〜3 文に要約。少額の料金。既定 OFF） */
+  summaryEnabled: boolean;
+  /** 意味で探す検索（記憶を OpenAI の埋め込みで数値化。言葉が一致しなくても近い内容を探す。少額の料金。既定 OFF） */
+  semanticEnabled: boolean;
 }
 
 export interface MemoryStatus {
@@ -84,6 +88,9 @@ export interface MemoryStatus {
   settings: MemorySettings;
   counts: { memories: number; sessions: number; messages: number };
   nodeVersion: string;
+  /** 要約・意味検索に使える OpenAI の設定があるか（APIキー） */
+  aiAvailable: boolean;
+  aiModels: { summary: string; embedding: string } | null;
 }
 
 // ---------- 文字列の正規化・類似度（日本語は単語の区切りが無いため 2 文字ずつで比べる） ----------

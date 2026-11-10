@@ -54,7 +54,7 @@ export function LatencyCard({ list, onClear }: { list: LatencyRecord[]; onClear:
           </p>
           {table(starts, START_SPANS)}
           <p className="muted small">
-            サーバー内訳（中央値）：KAITO.md {server(starts, 'server.persona')?.median ?? '—'}・長期記憶 {server(starts, 'server.memory')?.median ?? '—'}・一時キー発行（OpenAI）{server(starts, 'server.secret')?.median ?? '—'}
+            サーバー内訳（中央値）：KAITO.md {server(starts, 'server.persona')?.median ?? '—'}・長期記憶 {server(starts, 'server.memory')?.median ?? '—'}・一時キー発行（OpenAI）{server(starts, 'server.secret')?.median ?? '—'}・接続の申し込み（OpenAI）{server(starts, 'server.sdp')?.median ?? '—'}
           </p>
         </>
       )}

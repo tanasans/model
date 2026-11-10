@@ -27,7 +27,7 @@ import {
 /**
  * データ形式の版。v1：初版。v2：発言の検索用の正規化済み文字列（messages.norm）と、会話の開始日時の索引を追加（検索の高速化）
  */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 export const DB_FILE = 'kaito-memory.sqlite';
 
 const SCHEMA_V1 = `
@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 `;
 
-const DEFAULT_SETTINGS: MemorySettings = { historyEnabled: true, includePreferences: true, autoExtract: false };
+const DEFAULT_SETTINGS: MemorySettings = { historyEnabled: true, includePreferences: true, autoExtract: false, summaryEnabled: false, semanticEnabled: false };
 
 export class MemoryError extends Error {
   constructor(
@@ -166,6 +166,7 @@ export async function openMemoryStore(dataDir: string, now = () => Date.now()): 
       db.exec('COMMIT');
     }
     if (version < 2) migrateToV2(db);
+    if (version < 3) migrateToV3(db);
     db.exec('PRAGMA journal_mode = WAL');
   } catch (e) {
     try {
@@ -179,6 +180,21 @@ export async function openMemoryStore(dataDir: string, now = () => Date.now()): 
 }
 
 class CorruptError extends Error {}
+
+/** v2 → v3：会話の要約（sessions.summary）と、記憶の埋め込み（memories.embedding）を追加。既存の内容は変えない */
+export function migrateToV3(db: DatabaseSync): void {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const has = (t: string, c: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as Array<{ name: string }>).some((x) => x.name === c);
+    if (!has('sessions', 'summary')) db.exec('ALTER TABLE sessions ADD COLUMN summary TEXT');
+    if (!has('memories', 'embedding')) db.exec('ALTER TABLE memories ADD COLUMN embedding BLOB');
+    db.exec('PRAGMA user_version = 3');
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
 
 /** v1 → v2：既存の発言にも検索用の正規化済み文字列を付ける（内容は変えない）。途中で失敗したら元に戻す */
 export function migrateToV2(db: DatabaseSync): void {
@@ -269,13 +285,17 @@ export class MemoryStore {
     return {
       historyEnabled: b('history_enabled', DEFAULT_SETTINGS.historyEnabled),
       includePreferences: b('include_preferences', DEFAULT_SETTINGS.includePreferences),
-      autoExtract: false, // v1 では未実装（有効にできない）
+      autoExtract: false, // 未実装（有効にできない）
+      summaryEnabled: b('summary_enabled', false),
+      semanticEnabled: b('semantic_enabled', false),
     };
   }
   updateSettings(p: Partial<MemorySettings>): MemorySettings {
     const set = (k: string, v: boolean) => this.run('INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', k, v ? '1' : '0');
     if (typeof p.historyEnabled === 'boolean') set('history_enabled', p.historyEnabled);
     if (typeof p.includePreferences === 'boolean') set('include_preferences', p.includePreferences);
+    if (typeof p.summaryEnabled === 'boolean') set('summary_enabled', p.summaryEnabled);
+    if (typeof p.semanticEnabled === 'boolean') set('semantic_enabled', p.semanticEnabled);
     return this.getSettings();
   }
 
@@ -341,15 +361,86 @@ export class MemoryStore {
     const dup = p.content == null ? null : this.findDuplicate(content, id);
     if (dup) throw new MemoryError('DUPLICATE', '同じ内容の記憶がすでにあります。');
     this.run(
-      'UPDATE memories SET content = ?, norm = ?, category = ?, sensitive = ?, updated_at = ? WHERE id = ?',
-      content, normalizeText(content), p.category ?? cur.category, (p.sensitive ?? cur.sensitive) ? 1 : 0, this.now(), id,
+      // 内容が変わったら埋め込みは作り直す（古い内容で意味検索に出ないように消す）
+      'UPDATE memories SET content = ?, norm = ?, category = ?, sensitive = ?, updated_at = ?, embedding = CASE WHEN content = ? THEN embedding ELSE NULL END WHERE id = ?',
+      content, normalizeText(content), p.category ?? cur.category, (p.sensitive ?? cur.sensitive) ? 1 : 0, this.now(), content, id,
     );
     return this.getMemory(id)!;
   }
 
   /** 削除：内容を消し、削除済みの印だけ残す（復元・検索・AI への提供・バックアップの対象外） */
+  // ---------- 意味検索（埋め込み）・会話の要約 ----------
+  setEmbedding(id: string, v: Float32Array): void {
+    this.run("UPDATE memories SET embedding = ? WHERE id = ? AND status = 'active'", new Uint8Array(v.buffer, v.byteOffset, v.byteLength), id);
+  }
+
+  /** 埋め込みがまだ無い有効な記憶（最大 limit 件） */
+  memoriesWithoutEmbedding(limit = 200): Array<{ id: string; content: string }> {
+    return this.all("SELECT id, content FROM memories WHERE status = 'active' AND embedding IS NULL LIMIT ?", limit).map((r) => ({ id: String(r.id), content: String(r.content) }));
+  }
+
+  /** 意味の近い記憶（コサイン類似度が minSim 以上、上位 limit 件） */
+  semanticSearch(q: Float32Array, opts: { limit?: number; minSim?: number; category?: MemoryCategory | null } = {}): Array<MemoryRecord & { score: number }> {
+    const rows = this.all("SELECT * FROM memories WHERE status = 'active' AND embedding IS NOT NULL" + (opts.category ? ' AND category = ?' : ''), ...(opts.category ? [opts.category] : []));
+    const qn = Math.hypot(...q);
+    const out: Array<MemoryRecord & { score: number }> = [];
+    for (const r of rows) {
+      const b = r.embedding as Uint8Array;
+      const v = new Float32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
+      if (v.length !== q.length) continue;
+      let dot = 0;
+      let vn = 0;
+      for (let i = 0; i < v.length; i++) {
+        dot += v[i]! * q[i]!;
+        vn += v[i]! * v[i]!;
+      }
+      const sim = dot / (Math.sqrt(vn) * qn || 1);
+      if (sim >= (opts.minSim ?? 0.35)) out.push({ ...this.toMemory(r), score: sim });
+    }
+    return out.sort((a, b) => b.score - a.score).slice(0, opts.limit ?? 5);
+  }
+
+  setSummary(sessionId: string, summary: string): void {
+    this.run('UPDATE sessions SET summary = ? WHERE id = ?', summary.slice(0, 600), sessionId);
+  }
+
+  getSummary(sessionId: string): string | null {
+    const r = this.get('SELECT summary FROM sessions WHERE id = ?', sessionId);
+    return r && r.summary !== null ? String(r.summary) : null;
+  }
+
+  /** 要約に渡す文字起こし（確定した発言だけ。最大 maxChars 文字） */
+  transcriptFor(sessionId: string, maxChars = 6000): string {
+    return this.getMessages(sessionId)
+      .filter((m) => m.text)
+      .map((m) => `${m.role === 'user' ? 'ユーザー' : 'KAITO'}：${m.text}`)
+      .join('\n')
+      .slice(-maxChars);
+  }
+
+  /** 要約の検索（検索語の一致度で） */
+  searchSummaries(i: { query?: string | null; from?: number | null; to?: number | null; limit?: number }): Array<{ sessionId: string; startedAt: number; summary: string }> {
+    const where = ['summary IS NOT NULL'];
+    const p: SQLInputValue[] = [];
+    if (i.from != null) {
+      where.push('started_at >= ?');
+      p.push(i.from);
+    }
+    if (i.to != null) {
+      where.push('started_at < ?');
+      p.push(i.to);
+    }
+    const rows = this.all(`SELECT id, started_at, summary FROM sessions WHERE ${where.join(' AND ')} ORDER BY started_at DESC LIMIT 500`, ...p);
+    const words = queryWords((i.query ?? '').trim());
+    return rows
+      .map((r) => ({ sessionId: String(r.id), startedAt: Number(r.started_at), summary: String(r.summary), score: words.length ? scoreNorm(words, normalizeText(String(r.summary))) : 1 }))
+      .filter((x) => x.score >= 0.5)
+      .slice(0, i.limit ?? 5)
+      .map(({ score: _s, ...x }) => x);
+  }
+
   deleteMemory(id: string): boolean {
-    const r = this.run("UPDATE memories SET status = 'deleted', content = '', norm = '', source_session_id = NULL, deleted_at = ?, updated_at = ? WHERE id = ? AND status = 'active'", this.now(), this.now(), id);
+    const r = this.run("UPDATE memories SET status = 'deleted', content = '', norm = '', embedding = NULL, source_session_id = NULL, deleted_at = ?, updated_at = ? WHERE id = ? AND status = 'active'", this.now(), this.now(), id);
     return Number(r.changes) > 0;
   }
 
@@ -665,7 +756,7 @@ function validateBackup(raw: unknown): BackupData {
     format: 'kaito-memory-backup',
     version: 1,
     exportedAt: typeof d.exportedAt === 'string' ? d.exportedAt : '',
-    settings: { historyEnabled: st.historyEnabled !== false, includePreferences: st.includePreferences !== false, autoExtract: false },
+    settings: { historyEnabled: st.historyEnabled !== false, includePreferences: st.includePreferences !== false, autoExtract: false, summaryEnabled: st.summaryEnabled === true, semanticEnabled: st.semanticEnabled === true },
     memories,
     sessions,
   };

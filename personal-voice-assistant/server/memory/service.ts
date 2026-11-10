@@ -39,6 +39,64 @@ function forModel(m: MemoryRecord) {
   };
 }
 
+/**
+ * 非同期版：通常の検索で何も見つからず、意味検索が ON なら、検索語の埋め込みで近い記憶を探す。
+ * また会話の要約（ON のとき）も会話履歴の検索に含める。保存・訂正のあとは埋め込みを作る（ON のとき）。
+ */
+export async function runMemoryToolAsync(
+  store: MemoryStore | null,
+  name: MemoryToolName,
+  args: Record<string, unknown>,
+  ctx: { sessionId: string | null; now: Date },
+  ai: import('./ai.js').MemoryAi | null,
+): Promise<ToolReply> {
+  const out = runMemoryTool(store, name, args, ctx);
+  if (!store || !out.ok) return out;
+  const st = store.getSettings();
+  if (name === 'search_memory') {
+    const query = typeof args.query === 'string' ? args.query.trim() : '';
+    const target = args.target === 'history' || args.target === 'memories' ? args.target : 'both';
+    if (target !== 'memories' && st.summaryEnabled) {
+      const range = resolveRange(typeof args.date_from === 'string' ? args.date_from : null, typeof args.date_to === 'string' ? args.date_to : null, ctx.now);
+      const sums = store.searchSummaries({ query, from: range.from, to: range.to, limit: 3 });
+      if (sums.length) {
+        out.summaries = sums.map((x) => ({ when: formatLocal(x.startedAt), summary: x.summary }));
+        if (out.found === 0) out.instruction = '会話の要約が見つかりました。要約に書かれていることだけを根拠に答えてください。';
+        out.found = Number(out.found) + sums.length;
+      }
+    }
+    if (ai && st.semanticEnabled && query && target !== 'history' && (out.memories as unknown[]).length === 0) {
+      try {
+        const [q] = await ai.embed([query]);
+        const hits = store.semanticSearch(q!, { limit: 5, category: isMemoryCategory(args.category) ? args.category : null });
+        if (hits.length) {
+          out.memories = hits.map(forModel);
+          out.found = Number(out.found) + hits.length;
+          out.semantic = true;
+          out.instruction = '言葉は一致しませんでしたが、意味の近い記憶が見つかりました。質問に合う内容のときだけ、この結果を根拠に答えてください。合わなければ「確認できません」と答えてください。';
+        }
+      } catch {
+        /* 意味検索に失敗しても通常の結果を返す */
+      }
+    }
+  }
+  if (ai && st.semanticEnabled && (name === 'save_memory' || name === 'update_memory')) void embedPending(store, ai);
+  return out;
+}
+
+/** 埋め込みがまだ無い記憶に埋め込みを付ける（バックグラウンド・最大 200 件ずつ） */
+export async function embedPending(store: MemoryStore, ai: import('./ai.js').MemoryAi): Promise<number> {
+  const rows = store.memoriesWithoutEmbedding(200);
+  if (!rows.length) return 0;
+  try {
+    const vecs = await ai.embed(rows.map((r) => r.content));
+    rows.forEach((r, i) => vecs[i] && store.setEmbedding(r.id, vecs[i]!));
+    return rows.length;
+  } catch {
+    return 0;
+  }
+}
+
 export function runMemoryTool(store: MemoryStore | null, name: MemoryToolName, args: Record<string, unknown>, ctx: { sessionId: string | null; now: Date }): ToolReply {
   if (!store) return { ok: false, error: '記憶機能が使えません。過去の会話や記憶について聞かれたら「確認できません」と答えてください。' };
   try {

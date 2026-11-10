@@ -62,12 +62,12 @@ test('記憶データ形式 v2: v1 のデータベースを、内容を変えず
   db.close();
   const again = await openMemoryStore(dir);
   assert.equal(again.error, null);
-  assert.equal(SCHEMA_VERSION, 2);
+  assert.ok(SCHEMA_VERSION >= 2);
   const r = runMemoryTool(again.store!, 'search_memory', { query: '歯医者', target: 'history' }, { sessionId: null, now: new Date() });
   assert.deepEqual((r.history as Array<{ text: string }>).map((h) => h.text), ['来週の歯医者を覚えといて']);
   again.store!.close();
   const db2 = new DatabaseSync(path.join(dir, DB_FILE));
-  assert.equal((db2.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 2);
+  assert.equal((db2.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, SCHEMA_VERSION, '最新の形式まで移行');
   assert.doesNotThrow(() => migrateToV2(db2), '2 回実行しても壊れない');
   db2.close();
 });

@@ -299,6 +299,24 @@ function SettingsView({ m, busy }: { m: MemoryController; busy: boolean }) {
           <p className="muted small">確定した文字起こしだけを保存します（音声は保存しません）。あなたの発言がない会話（誤起動など）は保存しません。</p>
           <Toggle label="会話の最初に「好み」を渡す（最大5件）" checked={s.settings.includePreferences} onChange={(v) => void m.updateSettings({ includePreferences: v })} />
           <p className="muted small">それ以外の記憶と会話履歴は、必要なときだけ KAITO が検索します（全履歴を毎回 OpenAI に送ることはありません）。機微な情報は渡しません。</p>
+          <Toggle
+            label="会話の自動要約（OpenAI に送信・少額の料金）"
+            checked={s.settings.summaryEnabled}
+            disabled={!s.aiAvailable}
+            onChange={(v) => void m.updateSettings({ summaryEnabled: v })}
+          />
+          <p className="muted small">
+            会話が終わったら、確定した文字起こしを OpenAI（{s.aiModels?.summary ?? '—'}）に送って 2〜3 文に要約し、このパソコンに保存します。「前に何を話した？」の検索に使います。あなたの発言がない会話は要約しません。
+          </p>
+          <Toggle
+            label="意味で探す検索（OpenAI に送信・少額の料金）"
+            checked={s.settings.semanticEnabled}
+            disabled={!s.aiAvailable}
+            onChange={(v) => void m.updateSettings({ semanticEnabled: v })}
+          />
+          <p className="muted small">
+            保存した記憶と検索語を OpenAI（{s.aiModels?.embedding ?? '—'}）で数値にし、言葉が一致しなくても近い内容を探します。通常の検索で見つからないときだけ使います。{!s.aiAvailable ? 'APIキーが未設定のため使えません。' : ''}
+          </p>
           <Toggle label="会話からの自動記憶（次期版）" checked={false} onChange={() => undefined} disabled />
           <p className="muted small">v1 では、あなたが「覚えておいて」と頼んだ内容だけを保存します。</p>
         </section>

@@ -226,7 +226,23 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
       const audio = new Audio();
       audio.autoplay = true;
       // REALTIME_WEBRTC_URL（サーバーの環境変数）は計測用の模擬サーバーに接続するためだけに使う。通常は OpenAI
-      const transport = new OpenAIRealtimeWebRTC({ mediaStream: stream, audioElement: audio, ...(grant.realtimeUrl ? { baseUrl: grant.realtimeUrl } : {}) });
+      // 直接接続（既定）：接続の申し込みはローカルサーバー（/api/realtime/calls）へ。サーバーが API キー付きで OpenAI に送る
+      const transport = new OpenAIRealtimeWebRTC({
+        mediaStream: stream,
+        audioElement: audio,
+        ...(grant.realtimeUrl ? { baseUrl: new URL(grant.realtimeUrl, location.href).toString() } : {}),
+        // 計測：接続の内訳（申し込み → 応答 → 通信路の確立）。接続の内容は変えない
+        changePeerConnection: async (pc: RTCPeerConnection) => {
+          trace?.mark('offer');
+          pc.addEventListener('signalingstatechange', () => {
+            if (pc.signalingState === 'stable') trace?.mark('answer');
+          });
+          pc.addEventListener('connectionstatechange', () => {
+            if (pc.connectionState === 'connected') trace?.mark('pcConnected');
+          });
+          return pc;
+        },
+      });
       const agent = new RealtimeAgent({
         name: ASSISTANT_NAME,
         // サーバーが KAITO.md と個人設定から組み立てた指示文（client secret と同じ）
@@ -323,6 +339,13 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
       }
       if (cancelled()) throw new CancelledError();
       trace?.mark('connected');
+      // 計測：サーバーから OpenAI への接続の申し込み（SDP）にかかった時間
+      void fetch(`/api/session/${encodeURIComponent(grant.leaseId)}/timing`)
+        .then((r) => r.json() as Promise<{ sdpMs: number | null }>)
+        .then((t) => {
+          if (t.sdpMs !== null) trace?.value('server.sdp', t.sdpMs);
+        })
+        .catch(() => undefined);
 
       if (transport.callId) void reportCall(leaseId, transport.callId);
 

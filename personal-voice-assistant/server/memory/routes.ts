@@ -4,7 +4,8 @@
 import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import path from 'node:path';
 import { isMemoryCategory, resolveRange, type MemoryStatus, type SessionTrigger } from '../../shared/memory.js';
-import { runMemoryTool, isMemoryToolName } from './service.js';
+import { embedPending, runMemoryToolAsync, isMemoryToolName } from './service.js';
+import type { MemoryAi } from './ai.js';
 import { MemoryError, SCHEMA_VERSION, type MemoryStore } from './store.js';
 
 export interface MemoryHolder {
@@ -20,7 +21,7 @@ type Log = (msg: string) => void;
 const TOOL_WINDOW_MS = 60_000;
 const TOOL_MAX = 60;
 
-export function memoryRouter(h: MemoryHolder, guard: (req: Request, res: Response, next: NextFunction) => void, log: Log): Router {
+export function memoryRouter(h: MemoryHolder, guard: (req: Request, res: Response, next: NextFunction) => void, log: Log, ai: MemoryAi | null = null): Router {
   const r = express.Router();
   let toolCalls: number[] = [];
 
@@ -50,9 +51,11 @@ export function memoryRouter(h: MemoryHolder, guard: (req: Request, res: Respons
       dataDir: h.dataDir,
       dbPath: h.dbPath,
       schemaVersion: s ? SCHEMA_VERSION : 0,
-      settings: s ? s.getSettings() : { historyEnabled: false, includePreferences: false, autoExtract: false },
+      settings: s ? s.getSettings() : { historyEnabled: false, includePreferences: false, autoExtract: false, summaryEnabled: false, semanticEnabled: false },
       counts: s ? s.counts() : { memories: 0, sessions: 0, messages: 0 },
       nodeVersion: process.version,
+      aiAvailable: Boolean(ai),
+      aiModels: ai?.models ?? null,
     };
     res.json(body);
   });
@@ -61,10 +64,15 @@ export function memoryRouter(h: MemoryHolder, guard: (req: Request, res: Respons
     const s = need(res);
     if (!s) return;
     const b = (req.body ?? {}) as Record<string, unknown>;
-    res.json(s.updateSettings({
+    const next = s.updateSettings({
       ...(typeof b.historyEnabled === 'boolean' ? { historyEnabled: b.historyEnabled } : {}),
       ...(typeof b.includePreferences === 'boolean' ? { includePreferences: b.includePreferences } : {}),
-    }));
+      ...(typeof b.summaryEnabled === 'boolean' && ai ? { summaryEnabled: b.summaryEnabled } : {}),
+      ...(typeof b.semanticEnabled === 'boolean' && ai ? { semanticEnabled: b.semanticEnabled } : {}),
+    });
+    // 意味検索を ON にしたら、今ある記憶に埋め込みを付ける（バックグラウンド）
+    if (next.semanticEnabled && ai) void embedPending(s, ai).then((n) => n && log(`memory: embedded ${n}`));
+    res.json(next);
   });
 
   // ---------- 長期記憶 ----------
@@ -187,12 +195,23 @@ export function memoryRouter(h: MemoryHolder, guard: (req: Request, res: Respons
   });
 
   r.post('/sessions/:id/end', guard, (req, res) => {
-    h.store?.endSession(String(req.params.id));
+    const s = h.store;
+    const id = String(req.params.id);
+    s?.endSession(id);
     res.status(204).end();
+    // 会話の自動要約（ON のとき・ユーザーの発言がある会話だけ）。終了の応答を待たせない
+    if (s && ai && s.getSettings().summaryEnabled && s.getMessages(id).some((m) => m.role === 'user' && m.text)) {
+      ai.summarize(s.transcriptFor(id))
+        .then((sum) => {
+          if (sum && h.store) h.store.setSummary(id, sum);
+          log('memory: session summarized');
+        })
+        .catch(() => log('memory: summary failed'));
+    }
   });
 
   // ---------- 音声の記憶操作（Function Calling） ----------
-  r.post('/tool/:name', guard, express.json({ limit: '8kb' }), (req, res) => {
+  r.post('/tool/:name', guard, express.json({ limit: '8kb' }), async (req, res) => {
     const name = req.params.name;
     if (!isMemoryToolName(name)) {
       res.status(404).json({ ok: false, error: '不明な操作です。' });
@@ -208,7 +227,7 @@ export function memoryRouter(h: MemoryHolder, guard: (req: Request, res: Respons
     const args = (req.body?.args ?? {}) as Record<string, unknown>;
     const sessionId = typeof req.body?.sessionId === 'string' ? req.body.sessionId : null;
     const t = performance.now();
-    const out = runMemoryTool(h.store, name, args, { sessionId, now: new Date() });
+    const out = await runMemoryToolAsync(h.store, name, args, { sessionId, now: new Date() }, ai);
     // 計測用：サーバー内の処理時間（SQLite の検索など）。AI には渡さない（ヘッダーのみ）
     res.setHeader('X-Memory-Ms', (performance.now() - t).toFixed(2));
     log(`memory tool ${name} ${out.ok ? 'ok' : 'refused'}`);

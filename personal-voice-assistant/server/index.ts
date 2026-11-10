@@ -18,6 +18,7 @@ import { defaultPersonaPaths, importPersona, loadPersona, migrateLegacyPersona, 
 import { isInsideApp, resolveDataDir } from './memory/dataDir.js';
 import { DB_FILE, openMemoryStore } from './memory/store.js';
 import { memoryRouter, type MemoryHolder } from './memory/routes.js';
+import { createMemoryAi } from './memory/ai.js';
 import { buildMemoryInstructions } from '../shared/memory.js';
 import { desktopRouter, newDesktopState, otherInstance, removeLock, uiOpen, writeLock } from './desktop/desktop.js';
 import { isPersonaKey, type PersonaOverrides } from '../shared/persona.js';
@@ -60,6 +61,11 @@ const INTERRUPT_RESPONSE = ((): boolean | null => {
   return v === 'true' ? true : v === 'false' ? false : null;
 })();
 const TRANSCRIPTION = strEnv('TRANSCRIPTION_MODEL', TRANSCRIPTION_MODEL);
+/**
+ * 接続方式。direct（既定）：ブラウザの接続の申し込み（SDP）をローカルサーバーが API キー付きで OpenAI に送る
+ * （一時キーの発行が不要になり、起動が速い。API キーはブラウザに渡らない）。secret：従来の一時キー方式
+ */
+const CONNECT_MODE = enumEnv('REALTIME_CONNECT', ['direct', 'secret'] as const, 'direct');
 /** 計測用：WebRTC の接続先を模擬サーバーに切り替える（通常は未設定＝OpenAI）。ローカルのアドレスだけ受け付ける */
 const REALTIME_WEBRTC_URL = ((): string | null => {
   const v = (process.env.REALTIME_WEBRTC_URL ?? '').trim();
@@ -147,6 +153,12 @@ interface Lease {
   createdAt: number;
   callId?: string;
   timer: NodeJS.Timeout;
+  /** 直接接続：ブラウザがローカルサーバーに接続を申し込むときの合言葉（OpenAI のキーではない） */
+  localKey?: string;
+  /** 直接接続：OpenAI に送るセッション設定 */
+  session?: SecretOptions;
+  /** 計測：OpenAI への接続の申し込み（SDP）にかかった時間 */
+  sdpMs?: number;
 }
 let activeLease: Lease | null = null;
 let lastCreateAt = 0;
@@ -436,7 +448,7 @@ function memoryGuard(req: Request, res: Response, next: NextFunction): void {
   }
   requireLocalOrigin(req, res, next);
 }
-app.use('/api/memory', memoryRouter(memory, memoryGuard, log));
+app.use('/api/memory', memoryRouter(memory, memoryGuard, log, createMemoryAi(openai)));
 
 // ---------- デスクトップ常駐（状態・終了・自動起動の登録） ----------
 app.use(
@@ -498,17 +510,24 @@ app.post('/api/session', requireLocalOrigin, express.json({ limit: '1kb' }), asy
 
   try {
     const ts = performance.now();
-    let secret: Awaited<ReturnType<typeof issueClientSecret>>;
-    try {
-      secret = await issueClientSecret(openai, reasoningAccepted ? REASONING_EFFORT : null, opts);
-    } catch (err) {
-      // reasoning 設定が原因の 400 なら、設定なしで 1 回だけ再試行（従来の正常動作を壊さないため）
-      if (reasoningAccepted && err instanceof OpenAI.BadRequestError) {
-        reasoningAccepted = false;
-        log('reasoning setting rejected; retrying without it');
-        secret = await issueClientSecret(openai, null, opts);
-      } else {
-        throw err;
+    let secret: { value: string; expires_at: number };
+    if (CONNECT_MODE === 'direct') {
+      // 直接接続：OpenAI への問い合わせはここでは行わない（接続の申し込み時に 1 回だけ）
+      lease.localKey = `ek_local_${randomUUID().replace(/-/g, '')}`;
+      lease.session = opts;
+      secret = { value: lease.localKey, expires_at: Math.floor(Date.now() / 1000) + CLIENT_SECRET_TTL_SECONDS };
+    } else {
+      try {
+        secret = await issueClientSecret(openai, reasoningAccepted ? REASONING_EFFORT : null, opts);
+      } catch (err) {
+        // reasoning 設定が原因の 400 なら、設定なしで 1 回だけ再試行（従来の正常動作を壊さないため）
+        if (reasoningAccepted && err instanceof OpenAI.BadRequestError) {
+          reasoningAccepted = false;
+          log('reasoning setting rejected; retrying without it');
+          secret = await issueClientSecret(openai, null, opts);
+        } else {
+          throw err;
+        }
       }
     }
     const body: SessionGrant = {
@@ -528,10 +547,11 @@ app.post('/api/session', requireLocalOrigin, express.json({ limit: '1kb' }), asy
       instructions,
       greetingInstructions: persona.greetingInstructions,
       greetingText: persona.greetingText,
-      ...(REALTIME_WEBRTC_URL ? { realtimeUrl: REALTIME_WEBRTC_URL } : {}),
+      ...(CONNECT_MODE === 'direct' ? { realtimeUrl: '/api/realtime/calls' } : REALTIME_WEBRTC_URL ? { realtimeUrl: REALTIME_WEBRTC_URL } : {}),
+      connectMode: CONNECT_MODE,
     };
     res.setHeader('Server-Timing', `persona;dur=${personaMs.toFixed(1)}, memory;dur=${memoryMs.toFixed(1)}, secret;dur=${(performance.now() - ts).toFixed(1)}`);
-    log(`client secret issued voice=${voice} audioProfile=${audioProfile} speed=${speechSpeed}`);
+    log(`session prepared (${CONNECT_MODE}) voice=${voice} audioProfile=${audioProfile} speed=${speechSpeed}`);
     res.json(body);
   } catch (err) {
     releaseLease(id, 'issue-failed');
@@ -545,6 +565,66 @@ app.post('/api/session', requireLocalOrigin, express.json({ limit: '1kb' }), asy
       sendError(res, 502, 'UPSTREAM_ERROR', 'OpenAI への接続に失敗しました。ネットワークや設定を確認してください。');
     }
   }
+});
+
+/**
+ * 直接接続：ブラウザの WebRTC の接続の申し込み（SDP offer）を、API キー付きで OpenAI に送り、応答（SDP answer）を返す。
+ * 合言葉（会話開始時に渡した ek_local_…）が今の会話のものと一致するときだけ受け付ける。
+ */
+app.post('/api/realtime/calls', requireLocalOrigin, express.text({ type: 'application/sdp', limit: '64kb' }), async (req, res) => {
+  const lease = activeLease;
+  const auth = (req.get('authorization') ?? '').replace(/^Bearer\s+/i, '');
+  if (!openai || !lease || !lease.localKey || !lease.session || auth !== lease.localKey || typeof req.body !== 'string' || !req.body.startsWith('v=')) {
+    sendError(res, 403, 'FORBIDDEN_ORIGIN', '接続の申し込みを受け付けられませんでした。もう一度「会話開始」を押してください。');
+    return;
+  }
+  lease.localKey = undefined; // 1 回限り
+  const t = performance.now();
+  const create = (effort: ReasoningEffort | null) =>
+    openai.realtime.calls.create({
+      sdp: req.body as string,
+      session: buildRealtimeSession({
+        model: MODEL,
+        instructions: lease.session!.instructions,
+        voice: lease.session!.voice,
+        transcriptionModel: TRANSCRIPTION,
+        effort,
+        audio: lease.session!.audio,
+        speechSpeed: lease.session!.speechSpeed,
+      }),
+    });
+  try {
+    let r: globalThis.Response;
+    try {
+      r = await create(reasoningAccepted ? REASONING_EFFORT : null);
+    } catch (err) {
+      if (reasoningAccepted && err instanceof OpenAI.BadRequestError) {
+        reasoningAccepted = false;
+        log('reasoning setting rejected; retrying without it');
+        r = await create(null);
+      } else throw err;
+    }
+    const answer = await r.text();
+    const callId = (r.headers.get('location') ?? '').split('/').pop() || undefined;
+    if (callId && activeLease === lease) lease.callId = callId;
+    lease.sdpMs = performance.now() - t;
+    log(`realtime call created (${Math.round(lease.sdpMs)}ms)`);
+    res.status(201).setHeader('Content-Type', 'application/sdp');
+    if (callId) res.setHeader('Location', `/v1/realtime/calls/${callId}`);
+    res.send(answer);
+  } catch (err) {
+    const status = err instanceof OpenAI.APIError ? err.status : undefined;
+    log(`realtime call failed: ${describeError(err)}`);
+    if (status === 401 || status === 403) sendError(res, 502, 'UPSTREAM_AUTH', 'OpenAI の認証に失敗しました。APIキーと権限を確認してください。');
+    else if (status === 429) sendError(res, 502, 'UPSTREAM_ERROR', 'OpenAI 側の利用上限またはレート制限に達しました。');
+    else sendError(res, 502, 'UPSTREAM_ERROR', 'OpenAI への接続に失敗しました。');
+  }
+});
+
+/** 計測：接続の申し込み（SDP）にかかった時間 */
+app.get('/api/session/:leaseId/timing', (req, res) => {
+  const lease = activeLease;
+  res.json(lease && lease.id === req.params.leaseId ? { sdpMs: lease.sdpMs ?? null } : { sdpMs: null });
 });
 
 /** クライアントが WebRTC 接続後に call_id を通知する（最大時間超過時のサーバー側切断用） */

@@ -76,6 +76,8 @@ export interface SessionGrant {
   greetingText: string | null;
   /** 計測用の模擬サーバーの接続先（サーバーの環境変数 REALTIME_WEBRTC_URL を設定したときだけ） */
   realtimeUrl?: string;
+  /** 接続方式（direct＝ローカルサーバー経由で直接接続、secret＝一時キー） */
+  connectMode?: 'direct' | 'secret';
 }
 
 export interface HealthInfo {
