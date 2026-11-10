@@ -18,6 +18,14 @@
  *  - 1 回目の前に話し声などの続く音がない
  *  - 2 回の間隔が最小〜最大間隔の範囲内で、大きさが近い
  *  - 2 回目の後、確認時間内に 3 回目の鋭い音がない（タイピング・連続音を除外）
+ *
+ * v5（キーボードの誤起動対策）
+ *  - 拍手の基準に届かない小さな打鍵音も「小さな鋭い音」として記録し、
+ *    1 回目の直前（1 秒）や、タイピングが続いていたとき（直前 6 秒に 4 回以上 → 2 秒）は数えない
+ *  - 2 回目の後の確認時間を 0.45 秒にし、小さな打鍵音が 1 回でもあれば取り消す
+ *  - 「押す音」と「離す音」（1 打鍵で 2 回鳴る）を拍手 2 回と誤認しないよう、
+ *    最小間隔を 0.17 秒に、2 回の大きさの差の上限を 9dB にし、短い間隔で 2 回目が小さい並びを除外する
+ *  - キャリブレーションで登録したキーボード音・話し声の特徴と比べ、拍手よりそちらに近い音は数えない
  */
 
 /** 判定基準（キャリブレーションで変わる部分） */
@@ -36,6 +44,50 @@ export interface ClapProfile {
   minCentroidHz: number;
   /** 尖り：最大振幅÷RMS の上限。キーボードの針のように細いクリック音を除外 */
   maxCrest: number;
+  /** キャリブレーションで計測した拍手と、拍手以外の音（キーボード・話し声）の特徴（任意） */
+  signature?: ClapSignature;
+  /**
+   * キャリブレーション手順1で測った、部屋のふだんの小さな物音の大きさ（dBFS、任意）。
+   * これ以下の音は「打鍵音」として数えない（時計・家電などの物音でタイピング中と誤判断しないため）
+   */
+  roomSoundDb?: number;
+}
+
+/**
+ * 音の特徴ベクトル [大きさ dB, 短さ dB, 音の高さ（log2 Hz）, 尖り, 立ち上がり ms]。
+ * キャリブレーションの拍手（最大 5 個）と拍手以外の音（最大 30 個）を保存し、近い方を判定に使う。
+ */
+export interface ClapSignature {
+  claps: number[][];
+  noises: number[][];
+}
+export const SIGNATURE_MAX_CLAPS = 8;
+export const SIGNATURE_MAX_NOISES = 30;
+/** 特徴ごとの最小の幅（これより細かい差は同じとみなす） */
+const SIGNATURE_MIN_SCALE = [3, 3, 0.2, 0.6, 2.5];
+
+export function featureVector(v: { levelDb: number; decayDb: number; centroidHz: number; crest: number; riseMs: number }): number[] {
+  return [v.levelDb, v.decayDb, Math.log2(Math.max(50, v.centroidHz)), v.crest, v.riseMs];
+}
+
+/**
+ * 「拍手以外の音への近さ」の比：拍手以外の音までの距離 ÷ 拍手までの距離。
+ * 1 より小さいほど、登録したキーボード音・話し声に近い。登録が無ければ null。
+ */
+export function signatureRatio(sig: ClapSignature | undefined, x: number[]): number | null {
+  if (!sig || sig.claps.length === 0 || sig.noises.length === 0) return null;
+  const dims = SIGNATURE_MIN_SCALE.length;
+  // 拍手のばらつき（標準偏差）と最小の幅のうち大きい方で正規化する
+  const scale = SIGNATURE_MIN_SCALE.map((m, d) => {
+    const vals = sig.claps.map((c) => c[d]!);
+    const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+    const sd = Math.sqrt(vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length);
+    return Math.max(m, sd);
+  });
+  const dist = (a: number[]) => Math.sqrt(a.reduce((sum, v, d) => (d < dims ? sum + ((v - x[d]!) / scale[d]!) ** 2 : sum), 0) / dims);
+  const dClap = Math.min(...sig.claps.map(dist));
+  const dNoise = Math.min(...sig.noises.map(dist));
+  return dNoise / Math.max(0.05, dClap);
 }
 
 export const DEFAULT_PROFILE: ClapProfile = {
@@ -60,7 +112,7 @@ export interface ClapDetectorOptions {
   featuresOnly?: boolean;
 }
 
-export type CheckKey = 'level' | 'jump' | 'rise' | 'decay' | 'pitch' | 'crest';
+export type CheckKey = 'level' | 'jump' | 'rise' | 'decay' | 'pitch' | 'crest' | 'kbd';
 
 export interface FeatureCheck {
   key: CheckKey;
@@ -82,6 +134,8 @@ export interface TransientInfo {
   centroidHz: number;
   /** 尖り具合（最大振幅 ÷ RMS、始まりから 10ms） */
   crest: number;
+  /** 余韻：ピークから 30〜60ms 後の音が周囲の騒音より何 dB 大きいか（拍手は部屋が響く。打鍵音はすぐ騒音に戻る） */
+  tailDb: number;
   checks: FeatureCheck[];
   accepted: boolean;
   /** 不採用の理由（分かりやすい日本語） */
@@ -93,7 +147,23 @@ export type DetectorEvent =
   | { type: 'activity'; timeMs: number; durationMs: number }
   | { type: 'first-clap'; timeMs: number }
   | { type: 'sequence-cancelled'; timeMs: number; reason: string }
-  | { type: 'double-clap'; timeMs: number; intervalMs: number };
+  | { type: 'double-clap'; timeMs: number; intervalMs: number; detail: DoubleClapDetail };
+
+/** 拍手 2 回と判定したときの根拠（履歴に残す。音声そのものは含まない） */
+export interface DoubleClapDetail {
+  intervalMs: number;
+  first: TransientInfo;
+  second: TransientInfo;
+  /** 1 回目の前、小さな鋭い音もなかった時間（ms。記録範囲は最大 6 秒） */
+  quietBeforeMs: number;
+  /** 1 回目の前 6 秒間の小さな鋭い音（打鍵音など）の回数 */
+  softBefore: number;
+  /** 判定時の周囲の騒音レベル・反応ライン（dBFS） */
+  floorDb: number;
+  triggerDb: number;
+  sensitivity: number;
+  usedSignature: boolean;
+}
 
 export const CLAP_CONSTANTS = {
   frameMs: 2.5,
@@ -113,11 +183,39 @@ export const CLAP_CONSTANTS = {
   preQuietMs: 300,
   /** 1 回目の前に必要な、ほかの鋭い音（タイピング等）がない時間 */
   preSharpQuietMs: 800,
-  minIntervalMs: 120,
-  /** 2 回目の後、3 回目が来ないことを確認する時間 */
-  confirmMs: 300,
-  maxLevelDiffDb: 12,
+  /** 2 回の最小間隔（キーの「押す音→離す音」は 70〜180ms 程度のため、短すぎる並びは数えない） */
+  minIntervalMs: 170,
+  /** 2 回目の後、3 回目が来ないことを確認する時間（小さな打鍵音も含めて確認） */
+  confirmMs: 450,
+  maxLevelDiffDb: 9,
   warmupMs: 600,
+  /** 小さな鋭い音（打鍵音など）とみなす条件：騒音より何 dB 大きく、直前から何 dB 急に大きくなったか */
+  softAboveFloorDb: 8,
+  /** 反応ラインより何 dB 小さい音まで数えるか（部屋の小さな物音は数えず、拍手に近い大きさの打鍵音だけ数える） */
+  softBelowTriggerDb: 6,
+  /** 拍手候補より何 dB 小さい音まで「打鍵音」として数えるか（1 打鍵の大きさのばらつきを考慮） */
+  softBelowClapDb: 14,
+  softJumpDb: 7,
+  /** 拍手の余韻の中では、より急な変化だけを小さな鋭い音とみなす（残響の揺らぎを数えない） */
+  softJumpInTailDb: 11,
+  softSpacingMs: 50,
+  /** 1 回目の前に必要な、小さな鋭い音もない時間 */
+  preSoftQuietMs: 1000,
+  /** タイピング中とみなす：直前 typingWindowMs に typingCount 回以上の小さな鋭い音 */
+  typingWindowMs: 6000,
+  typingCount: 4,
+  /** タイピング中だった場合に、1 回目の前に必要な静かな時間 */
+  typingQuietMs: 2000,
+  /** タイピング中だった場合、2 回とも部屋の響き（余韻）がこれ以上ある音だけを拍手とみなす */
+  typingMinTailDb: 4,
+  /** 少し前までタイピングしていた：直前 recentTypingMs に、小さな打鍵音を含めて recentTypingCount 回以上（余韻の条件だけ適用） */
+  recentTypingMs: 20000,
+  recentTypingCount: 8,
+  /** 自分の音（拍手の始まり・直後の響き）を小さな鋭い音として数えない範囲 */
+  selfSoftMs: 70,
+  /** 「押す音→離す音」とみなす並び：間隔がこれ以下で、2 回目が releaseDropDb 以上小さい */
+  releaseGapMs: 240,
+  releaseDropDb: 5,
 } as const;
 
 /** 感度による基準の調整（5 が基準そのもの） */
@@ -131,7 +229,15 @@ export function effectiveProfile(base: ClapProfile, sensitivity: number): ClapPr
     minDecayDb: Math.max(1, base.minDecayDb - k * 0.6),
     minCentroidHz: Math.max(200, base.minCentroidHz * (1 - k * 0.07)),
     maxCrest: base.maxCrest + k * 0.3,
+    ...(base.signature ? { signature: base.signature } : {}),
+    ...(base.roomSoundDb !== undefined ? { roomSoundDb: base.roomSoundDb } : {}),
   };
+}
+
+/** 登録したキーボード音への近さの基準（比がこれ未満なら数えない）。感度が高いほど緩い */
+export function signatureThreshold(sensitivity: number): number {
+  const k = Math.min(10, Math.max(1, Math.round(sensitivity))) - 5;
+  return Math.max(0.45, 0.8 - k * 0.05);
 }
 
 const CHECK_TEXT: Record<CheckKey, { label: string; fail: string }> = {
@@ -141,6 +247,7 @@ const CHECK_TEXT: Record<CheckKey, { label: string; fail: string }> = {
   decay: { label: '短さ', fail: '音がすぐに消えない（話し声・音楽など続く音）' },
   pitch: { label: '音の高さ', fail: '音が低い（物を置く音・足音など）' },
   crest: { label: '尖り', fail: '針のように細い音（キーボード・カチッという音）' },
+  kbd: { label: 'キーボード音との違い', fail: 'キャリブレーションで登録したキーボード音・話し声に近い' },
 };
 
 interface Frame {
@@ -159,8 +266,8 @@ interface Candidate {
 
 type Sequence =
   | { state: 'idle' }
-  | { state: 'one'; t1: number; level1: number }
-  | { state: 'two'; t1: number; t2: number };
+  | { state: 'one'; t1: number; level1: number; info1: TransientInfo; quietBeforeMs: number; softBefore: number; typing: boolean }
+  | { state: 'two'; t1: number; t2: number; info1: TransientInfo; info2: TransientInfo; quietBeforeMs: number; softBefore: number };
 
 export class ClapDetector {
   private opts: ClapDetectorOptions;
@@ -186,6 +293,12 @@ export class ClapDetector {
   private seq: Sequence = { state: 'idle' };
   private lastActivityMs = -Infinity;
   private lastSharpMs = -Infinity;
+  /** 小さな鋭い音（打鍵音など）の時刻（直近 typingWindowMs） */
+  private softTimes: Array<{ t: number; db: number }> = [];
+  /** 反応ラインと無関係に記録する小さな鋭い音（直近 recentTypingMs。少し前までのタイピングの判断用） */
+  private broadSoft: number[] = [];
+  private lastBroadMs = -Infinity;
+  private lastSoftMs = -Infinity;
   private _levelDb = -100;
 
   constructor(opts: ClapDetectorOptions) {
@@ -275,6 +388,7 @@ export class ClapDetector {
     const loud = db >= e.minLevelDb && db >= this.floorDb + e.minAboveFloorDb;
     const jump = db - this.preLevelDb();
     const onset = !warm && loud && jump >= e.minJumpDb;
+    this.trackSoft(now, db, jump);
 
     if (this.mode === 'candidate' && this.cand) {
       const candPeak = Math.max(...this.cand.frames.map((f) => f.db));
@@ -338,6 +452,34 @@ export class ClapDetector {
     }
   }
 
+  /** 拍手の基準に届かない小さな打鍵音なども記録する（タイピング中かどうかの判断に使う） */
+  private trackSoft(now: number, db: number, jump: number): void {
+    const C = CLAP_CONSTANTS;
+    // 騒音学習中（開始直後）も記録する（待機を ON にした直後の打鍵音を見逃さないため。最初の 0.2 秒だけ除く）
+    if (now < 200 || db < this.floorDb + C.softAboveFloorDb) return;
+    if (this.eff.roomSoundDb !== undefined && db < this.eff.roomSoundDb + 2) return;
+    if (jump < (this.mode === 'tail' ? C.softJumpInTailDb : C.softJumpDb)) return;
+    if (now - this.lastBroadMs >= C.softSpacingMs) {
+      this.lastBroadMs = now;
+      this.broadSoft.push(now);
+      while (this.broadSoft.length && now - this.broadSoft[0]! > C.recentTypingMs) this.broadSoft.shift();
+    }
+    if (db < this.triggerLevelDb - C.softBelowTriggerDb) return;
+    if (now - this.lastSoftMs < C.softSpacingMs) return;
+    this.lastSoftMs = now;
+    this.softTimes.push({ t: now, db });
+    while (this.softTimes.length && now - this.softTimes[0]!.t > C.typingWindowMs) this.softTimes.shift();
+  }
+
+  /** [from, to) の範囲の小さな鋭い音のうち、minDb 以上のもの（時刻） */
+  private softBetween(from: number, to: number, minDb = -Infinity): number[] {
+    return this.softTimes.filter((x) => x.t >= from && x.t < to && x.db >= minDb).map((x) => x.t);
+  }
+  /** 拍手候補と比べて数える小さな鋭い音の最小レベル（拍手よりずっと小さい物音は数えない） */
+  private softGateFor(levelDb: number): number {
+    return levelDb - CLAP_CONSTANTS.softBelowClapDb;
+  }
+
   private startCandidate(frame: Frame, jump: number): void {
     this.mode = 'candidate';
     this.cand = { startIdx: this.frameIdx, preDb: frame.db - jump, frames: [frame] };
@@ -398,6 +540,7 @@ export class ClapDetector {
       decayDb: peak.db - laterDb,
       centroidHz: this.centroidHz(en, df),
       crest,
+      tailDb: laterDb - this.floorDb,
     }, e);
     events.push({ type: 'transient', info });
 
@@ -405,7 +548,7 @@ export class ClapDetector {
     this.mode = 'tail';
     this.tailStartIdx = this.frameIdx;
     if (this.opts.featuresOnly) return;
-    if (info.accepted) this.onClap(info.timeMs, info.levelDb, events);
+    if (info.accepted) this.onClap(info, events);
     else this.onSharpNoise(info.timeMs, info.reason ?? '拍手以外の音', events);
     // 大きさと急な変化を満たす音は「鋭い音」として記録（直後の 1 回目を数えないため）
     if (info.checks[0]!.pass && info.checks[1]!.pass) this.lastSharpMs = info.timeMs;
@@ -433,6 +576,8 @@ export class ClapDetector {
       mk('pitch', v.centroidHz, e.minCentroidHz, 'Hz', 'min'),
       mk('crest', v.crest, e.maxCrest, '', 'max'),
     ];
+    const ratio = signatureRatio(e.signature, featureVector(v));
+    if (ratio !== null) checks.push(mk('kbd', ratio, signatureThreshold(this.opts.sensitivity), '', 'min'));
     const failed = checks.filter((c) => !c.pass);
     return {
       ...v,
@@ -442,6 +587,7 @@ export class ClapDetector {
       decayDb: round1(v.decayDb),
       centroidHz: Math.round(v.centroidHz),
       crest: round1(v.crest),
+      tailDb: round1(v.tailDb),
       checks,
       accepted: failed.length === 0,
       reason: failed.length ? failed.map((c) => CHECK_TEXT[c.key].fail).join('／') : undefined,
@@ -457,39 +603,63 @@ export class ClapDetector {
   }
 
   // ---------- 2 回の並び ----------
-  private onClap(t: number, level: number, events: DetectorEvent[]): void {
+  private onClap(info: TransientInfo, events: DetectorEvent[]): void {
+    const C = CLAP_CONSTANTS;
+    const t = info.timeMs;
+    const level = info.levelDb;
     const seq = this.seq;
     if (seq.state === 'idle') {
-      const quietActivity = t - this.lastActivityMs >= CLAP_CONSTANTS.preQuietMs;
-      const quietSharp = t - this.lastSharpMs >= CLAP_CONSTANTS.preSharpQuietMs;
-      if (quietActivity && quietSharp) {
-        this.seq = { state: 'one', t1: t, level1: level };
-        events.push({ type: 'first-clap', timeMs: t });
-      } else {
-        events.push({
-          type: 'sequence-cancelled',
-          timeMs: t,
-          reason: quietActivity
-            ? '直前にタイピングなどの鋭い音があったため、1回目として数えませんでした（1秒ほど静かにしてから叩いてください）'
-            : '直前に話し声などの音があったため、1回目として数えませんでした（少し静かにしてから叩いてください）',
-        });
+      const quietActivity = t - this.lastActivityMs >= C.preQuietMs;
+      const quietSharp = t - this.lastSharpMs >= C.preSharpQuietMs;
+      // 自分の始まりより前の、小さな鋭い音（打鍵音など）
+      const before = this.softBetween(t - C.typingWindowMs, t - 5, this.softGateFor(level));
+      const lastSoft = before.length ? before[before.length - 1]! : -Infinity;
+      const quietBeforeMs = Math.min(C.typingWindowMs, t - lastSoft);
+      const typing = before.length >= C.typingCount;
+      const recentTyping = typing || this.broadSoft.filter((x) => x >= t - C.recentTypingMs && x < t - 5).length >= C.recentTypingCount;
+      const needQuiet = typing ? C.typingQuietMs : C.preSoftQuietMs;
+      let reason: string | null = null;
+      if (!quietActivity) reason = '直前に話し声などの音があったため、1回目として数えませんでした（少し静かにしてから叩いてください）';
+      else if (!quietSharp) reason = '直前にタイピングなどの鋭い音があったため、1回目として数えませんでした（1秒ほど静かにしてから叩いてください）';
+      else if (quietBeforeMs < needQuiet)
+        reason = typing
+          ? `タイピング中と判断したため、1回目として数えませんでした（直前6秒に小さな鋭い音 ${before.length} 回。キーボードから手を離して2秒ほど待ってから叩いてください）`
+          : `直前 ${(quietBeforeMs / 1000).toFixed(1)} 秒以内に小さな鋭い音（打鍵音など）があったため、1回目として数えませんでした`;
+      else if (recentTyping && info.tailDb < C.typingMinTailDb)
+        reason = `タイピングの直後で、音の余韻がほとんどない（${info.tailDb}dB）ため打鍵音と判断しました（キーボードから手を離して数秒待ってから叩いてください）`;
+      if (reason) {
+        events.push({ type: 'sequence-cancelled', timeMs: t, reason });
+        return;
       }
+      this.seq = { state: 'one', t1: t, level1: level, info1: info, quietBeforeMs: Math.round(quietBeforeMs), softBefore: before.length, typing: recentTyping };
+      events.push({ type: 'first-clap', timeMs: t });
       return;
     }
     if (seq.state === 'one') {
       const gap = t - seq.t1;
-      if (gap < CLAP_CONSTANTS.minIntervalMs) return;
+      if (gap < C.minIntervalMs) {
+        this.cancel(t, `2回の間隔が短すぎます（${Math.round(gap)}ms。キーの「押す音」と「離す音」の可能性）`, events);
+        return;
+      }
       if (gap > this.opts.maxIntervalMs) {
-        // 間隔が長すぎた → 今回を新しい 1 回目とする
-        this.seq = { state: 'one', t1: t, level1: level };
-        events.push({ type: 'first-clap', timeMs: t });
+        // 間隔が長すぎた → 今回は数えない（直前に鋭い音があったため、新しい 1 回目にもしない）
+        this.cancel(t, `2回目が ${(this.opts.maxIntervalMs / 1000).toFixed(2)} 秒以内に来ませんでした`, events);
         return;
       }
-      if (Math.abs(level - seq.level1) > CLAP_CONSTANTS.maxLevelDiffDb) {
-        this.cancel(t, `2回の大きさが違いすぎます（差 ${Math.round(Math.abs(level - seq.level1))}dB）。同じ強さで叩いてください`, events);
+      const diff = level - seq.level1;
+      if (Math.abs(diff) > C.maxLevelDiffDb) {
+        this.cancel(t, `2回の大きさが違いすぎます（差 ${Math.round(Math.abs(diff))}dB）。同じ強さで叩いてください`, events);
         return;
       }
-      this.seq = { state: 'two', t1: seq.t1, t2: t };
+      if (seq.typing && info.tailDb < C.typingMinTailDb) {
+        this.cancel(t, `タイピングの直後で、2回目の音に余韻がほとんどない（${info.tailDb}dB）ため打鍵音と判断しました`, events);
+        return;
+      }
+      if (gap <= C.releaseGapMs && diff <= -C.releaseDropDb) {
+        this.cancel(t, `短い間隔で2回目が小さい音でした（${Math.round(gap)}ms・${Math.round(-diff)}dB 小さい。キーの「押す音」と「離す音」の可能性）`, events);
+        return;
+      }
+      this.seq = { state: 'two', t1: seq.t1, t2: t, info1: seq.info1, info2: info, quietBeforeMs: seq.quietBeforeMs, softBefore: seq.softBefore };
       return;
     }
     this.cancel(t, '3回以上続けて鋭い音がありました（タイピング・連続音と判断）', events);
@@ -519,9 +689,33 @@ export class ClapDetector {
         timeMs: t,
         reason: `2回目が ${(this.opts.maxIntervalMs / 1000).toFixed(2)} 秒以内に来ませんでした（間隔の設定を長くするか、早めに叩いてください）`,
       });
-    } else if (seq.state === 'two' && t - seq.t2 >= CLAP_CONSTANTS.confirmMs && !busy) {
-      this.seq = { state: 'idle' };
-      events.push({ type: 'double-clap', timeMs: t, intervalMs: Math.round(seq.t2 - seq.t1) });
+    } else if (seq.state === 'two') {
+      // 2 回目の後の確認時間に、小さな打鍵音が 1 回でもあれば取り消す
+      const after = this.softBetween(seq.t2 + CLAP_CONSTANTS.selfSoftMs, t + 1, this.softGateFor(Math.min(seq.info1.levelDb, seq.info2.levelDb)));
+      if (after.length) {
+        this.cancel(t, `2回目の直後（${Math.round(after[0]! - seq.t2)}ms 後）に小さな鋭い音がありました（タイピングと判断）`, events);
+        return;
+      }
+      if (t - seq.t2 >= CLAP_CONSTANTS.confirmMs && !busy) {
+        this.seq = { state: 'idle' };
+        const intervalMs = Math.round(seq.t2 - seq.t1);
+        events.push({
+          type: 'double-clap',
+          timeMs: t,
+          intervalMs,
+          detail: {
+            intervalMs,
+            first: seq.info1,
+            second: seq.info2,
+            quietBeforeMs: seq.quietBeforeMs,
+            softBefore: seq.softBefore,
+            floorDb: round1(this.floorDb),
+            triggerDb: round1(this.triggerLevelDb),
+            sensitivity: this.opts.sensitivity,
+            usedSignature: Boolean(this.eff.signature),
+          },
+        });
+      }
     }
   }
 }

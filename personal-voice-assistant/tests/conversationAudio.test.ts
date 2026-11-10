@@ -177,6 +177,7 @@ test('基本設定: 記憶・プライバシー・重要操作のルールと、
  * ここと README の「保存されるデータ」を必ず更新する（意図しない個人情報の保存を防ぐ）。
  */
 const KNOWN_STORAGE_KEYS = [
+  'pva.clapHistory.v1',
   'pva.clapSettings.v1',
   'pva.clapProfile.v1',
   'pva.clapProfile.v2',

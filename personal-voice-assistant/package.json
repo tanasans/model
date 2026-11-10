@@ -12,7 +12,8 @@
     "test": "node --import tsx --test tests/*.test.ts",
     "setup:wake": "node scripts/setup-wake-model.mjs",
     "persona:promote": "tsx scripts/persona-promote.ts",
-    "bench:memory": "tsx scripts/bench-memory-search.ts"
+    "bench:memory": "tsx scripts/bench-memory-search.ts",
+    "bench:clap": "tsx scripts/bench-clap-typing.ts"
   },
   "author": "",
   "license": "UNLICENSED",

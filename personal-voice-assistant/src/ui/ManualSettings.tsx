@@ -2,8 +2,9 @@ import type { ClapProfile } from '../clap/clapDetector';
 import { fmtNum } from './parts';
 
 /** 拍手判定基準の手動設定（値の保存・反映は useClapController 側） */
+type NumericKey = Exclude<keyof ClapProfile, 'signature' | 'roomSoundDb'>;
 const MANUAL_FIELDS: Array<{
-  key: keyof ClapProfile;
+  key: NumericKey;
   label: string;
   min: number;
   max: number;

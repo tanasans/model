@@ -172,6 +172,45 @@ export class Track {
     }
     return this;
   }
+  /**
+   * 実機に近いキーボード：1 打鍵 ＝ 押す音（カチッ＋底打ちのコトッ）＋ 70〜180ms 後の離す音（4〜12dB 小さい）。
+   * キーごとに音量・音色がばらつき、スペース・Enter は大きめ。
+   * 打ち方：単語（3〜8 打鍵）、2 打鍵だけで止まる操作（Enter 2 回・Backspace 2 回など）、1 打鍵だけ、考える間（1〜4 秒）。
+   */
+  keystroke(atMs: number, peak: number, seed: number, opts: { big?: boolean } = {}): this {
+    const r = rng(seed);
+    const mk = (amp: number, clickMs: number, center: number, thockHz: number) => {
+      const n = Math.round(0.035 * SR);
+      const c = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        const click = r() * 2 * Math.exp(-i / (SR * clickMs / 1000));
+        const thock = Math.sin((2 * Math.PI * thockHz * i) / SR) * Math.exp(-i / (SR * 0.008)) * (opts.big ? 0.7 : 0.35);
+        c[i] = click + thock;
+      }
+      return normalizePeak(bandpass(c, center, 0.45), amp);
+    };
+    const press = peak * (opts.big ? 1.4 : 0.6 + (r() + 0.5) * 0.7);
+    this.addWave(atMs, mk(press, 0.6 + (r() + 0.5) * 2.2, 2200 + (r() + 0.5) * 3000, opts.big ? 140 : 200 + (r() + 0.5) * 150));
+    const relAt = atMs + 70 + (r() + 0.5) * 110;
+    const rel = press * Math.pow(10, -(4 + (r() + 0.5) * 8) / 20);
+    return this.addWave(relAt, mk(rel, 0.5 + (r() + 0.5) * 1.2, 3000 + (r() + 0.5) * 2500, 260));
+  }
+  typingReal(atMs: number, seconds: number, peak = 0.2, seed = 9): this {
+    const r = rng(seed);
+    let t = 0;
+    let k = 0;
+    while (t < seconds) {
+      const u = r() + 0.5;
+      const keys = u < 0.2 ? 1 : u < 0.45 ? 2 : 3 + Math.floor((r() + 0.5) * 6);
+      for (let i = 0; i < keys && t < seconds; i++) {
+        const big = r() + 0.5 < (keys <= 2 ? 0.5 : 0.12); // 単独操作は Enter・スペースが多い
+        this.keystroke(atMs + t * 1000, peak, seed * 7919 + k++, { big });
+        t += 0.11 + (r() + 0.5) * 0.25;
+      }
+      t += 0.2 + (r() + 0.5) * 0.4 + (r() > 0.25 ? 1 + (r() + 0.5) * 3 : 0);
+    }
+    return this;
+  }
   click(atMs: number, peak = 0.05): this {
     const r = rng(Math.round(atMs) + 1);
     const n = Math.round(SR * 0.01);

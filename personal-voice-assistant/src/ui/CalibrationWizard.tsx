@@ -50,7 +50,9 @@ export function CalibrationWizard({
         <div>
           <p>
             拍手を {snap.clapCount} 回数えました。続けて、<strong>誤起動させたくない音</strong>（ふだんの声で話す・キーボードを打つ）を{' '}
-            {Math.round(CALIB_TIMING.noiseMs / 1000)} 秒測ると、それと区別できる基準にします。
+            {Math.round(CALIB_TIMING.noiseMs / 1000)} 秒測ると、その音を登録して拍手と区別します。
+            <br />
+            <small className="meta">キーボードで誤起動する場合は、ふだんどおり文章を打ってください（Enter・スペースも含めて）。</small>
             <br />
             <small className="meta">{snap.secondsLeft} 秒操作がなければ、自動で結果へ進みます。</small>
           </p>
@@ -66,7 +68,7 @@ export function CalibrationWizard({
       )}
       {step === 'noise' && snap && (
         <p>
-          <strong>ふだんの声で話す、またはキーボードを打ってください</strong>（拍手はしないでください）… 残り {snap.secondsLeft} 秒
+          <strong>キーボードをふだんどおり打つ、またはふだんの声で話してください</strong>（拍手はしないでください）… 残り {snap.secondsLeft} 秒
         </p>
       )}
 

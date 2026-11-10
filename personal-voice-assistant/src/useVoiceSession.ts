@@ -49,6 +49,18 @@ interface Active {
   stopProbe: (() => void) | null;
   /** 声で「終わって」と言われたとき、別れの一言を再生し終えてから切断する */
   ender: EndAfterReply;
+  trigger: 'manual' | 'clap' | 'wake';
+  /** 接続が完了したか */
+  connected: boolean;
+  /** 会話中にユーザーが話したか（API の発話検出イベントで判断） */
+  userSpoke: boolean;
+}
+
+/** 会話が終わったときに呼ばれる（拍手起動の誤起動判定などに使う） */
+export interface SessionEndInfo {
+  trigger: 'manual' | 'clap' | 'wake';
+  connected: boolean;
+  userSpoke: boolean;
 }
 
 export interface StartOptions {
@@ -73,8 +85,10 @@ export interface StartOptions {
   parallelPrep?: boolean;
 }
 
-/** 拍手で起動したのに話しかけられなかった場合、この秒数で自動終了する */
-export const CLAP_NO_SPEECH_TIMEOUT_SEC = 15;
+/** 拍手で起動したのに話しかけられなかった場合、この秒数で自動終了する（誤起動時の接続時間を短くする） */
+export const CLAP_NO_SPEECH_TIMEOUT_SEC = 10;
+/** 呼びかけで起動したのに話しかけられなかった場合の自動終了（従来どおり） */
+export const WAKE_NO_SPEECH_TIMEOUT_SEC = 15;
 
 export interface VoiceSessionOptions {
   /** 会話で使う Function Calling のツール（天気など）。毎回の会話開始時に取得する */
@@ -88,6 +102,8 @@ export interface VoiceSessionOptions {
     onEvent: (ev: { type?: string; [k: string]: unknown }) => void;
     onEnd: () => void;
   };
+  /** 会話が終わったとき（接続できなかった場合も含む） */
+  onEnded?: (info: SessionEndInfo) => void;
 }
 
 export function useVoiceSession(opts: VoiceSessionOptions = {}) {
@@ -95,6 +111,8 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
   getToolsRef.current = opts.getTools;
   const observerRef = useRef(opts.observer);
   observerRef.current = opts.observer;
+  const onEndedRef = useRef(opts.onEnded);
+  onEndedRef.current = opts.onEnded;
   const [phase, setPhase] = useState<Phase>('idle');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -139,10 +157,12 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
     await notifyEnd(a.leaseId);
     setRemaining(null);
     setPhase('idle');
+    onEndedRef.current?.({ trigger: a.trigger, connected: a.connected, userSpoke: a.userSpoke });
   }, []);
 
-  const start = useCallback(async (options: StartOptions = {}) => {
-    if (startingRef.current || activeRef.current) return;
+  /** 会話を開始する。接続できたら true */
+  const start = useCallback(async (options: StartOptions = {}): Promise<boolean> => {
+    if (startingRef.current || activeRef.current) return false;
     startingRef.current = true;
     const gen = ++genRef.current;
     const cancelled = () => gen !== genRef.current;
@@ -255,6 +275,9 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
         noSpeechTimer: null,
         stopProbe: null,
         meter: createInputMeter(stream),
+        trigger: options.trigger ?? 'manual',
+        connected: false,
+        userSpoke: false,
         ender: createEndAfterReply(() => {
           if (activeRef.current === active) void teardown({ reason: '声の指示で会話を終了しました。' });
         }),
@@ -277,6 +300,7 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
         }
         active.ender.onEvent(ev.type);
         if (ev.type === 'output_audio_buffer.started') trace?.mark('serverAudio');
+        if (ev.type === 'input_audio_buffer.speech_started') active.userSpoke = true;
         if (ev.type === 'input_audio_buffer.speech_started' && active.noSpeechTimer !== null) {
           window.clearTimeout(active.noSpeechTimer);
           active.noSpeechTimer = null;
@@ -344,20 +368,23 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
       window.setTimeout(finishTrace, readyIn + 50);
       if (options.trigger === 'clap' || options.trigger === 'wake') {
         const how = options.trigger === 'clap' ? '拍手' : '呼びかけ';
+        const sec = options.trigger === 'clap' ? CLAP_NO_SPEECH_TIMEOUT_SEC : WAKE_NO_SPEECH_TIMEOUT_SEC;
         active.noSpeechTimer = window.setTimeout(() => {
           if (activeRef.current !== active) return;
           void teardown({
-            reason: `${how}で起動しましたが、${CLAP_NO_SPEECH_TIMEOUT_SEC}秒間話しかけがなかったため自動で終了しました（誤起動対策）。`,
+            reason: `${how}で起動しましたが、${sec}秒間話しかけがなかったため自動で終了しました（誤起動対策）。`,
           });
-        }, CLAP_NO_SPEECH_TIMEOUT_SEC * 1000);
+        }, sec * 1000);
       }
+      active.connected = true;
       setPhase('connected');
+      return true;
     } catch (e) {
       if (stream) stopStream(stream);
       if (e instanceof CancelledError) {
         // 終了ボタン等で中断された。teardown 済み or これから解放する
         if (grant && !activeRef.current) void notifyEnd(grant.leaseId);
-        return;
+        return false;
       }
       const message = e instanceof UserFacingError ? e.message : '予期しないエラーが発生しました。';
       if (activeRef.current) {
@@ -366,7 +393,9 @@ export function useVoiceSession(opts: VoiceSessionOptions = {}) {
         if (grant) await notifyEnd(grant.leaseId);
         setError(message);
         setPhase('idle');
+        onEndedRef.current?.({ trigger: options.trigger ?? 'manual', connected: false, userSpoke: false });
       }
+      return false;
     } finally {
       startingRef.current = false;
     }

@@ -21,7 +21,7 @@ import { ConversationLogger } from './memory/conversationLogger';
 import { createMemoryTools } from './memory/memoryTools';
 import { usePersona } from './persona/usePersona';
 import { TacticalBackdrop } from './ui/TacticalBackdrop';
-import { useVoiceSession } from './useVoiceSession';
+import { useVoiceSession, type SessionEndInfo } from './useVoiceSession';
 import { LatencyTrace, loadLatency, saveLatency, LATENCY_MAX, type LatencyRecord } from './latency/latencyTrace';
 import { LocalGreetingPlayer } from './voice/localGreeting';
 import type { WakeDecision } from './wake/wakePolicy';
@@ -123,7 +123,9 @@ export function App() {
   );
   const onMemoryCallRef = useRef(onMemoryCall);
   onMemoryCallRef.current = onMemoryCall;
-  const voice = useVoiceSession({ getTools, observer });
+  // 会話の終了時：拍手で起動した会話なら、話しかけたかどうかを拍手の履歴に記録する（誤起動の判定）
+  const onSessionEndRef = useRef<(i: SessionEndInfo) => void>(() => {});
+  const voice = useVoiceSession({ getTools, observer, onEnded: (i) => onSessionEndRef.current(i) });
   const { phase, start, stop } = voice;
   const voiceSettings = useVoiceSettings();
   const conversation = useConversationSettings();
@@ -232,6 +234,10 @@ export function App() {
   const standbyPaused = phase !== 'idle' || triggering;
   const wake = useWakeController({ paused: standbyPaused, testMode, onWakeStart: (d) => triggerStart('wake', d) });
   const clap = useClapController({ paused: standbyPaused, testMode, onClapStart: () => triggerStart('clap') });
+  onSessionEndRef.current = ({ trigger, connected, userSpoke }) => {
+    if (trigger !== 'clap') return;
+    clap.markOutcome(!connected ? 'not-started' : userSpoke ? 'spoke' : 'no-speech');
+  };
   endByVoiceRef.current = ({ stopStandby }) => {
     const ok = voice.endAfterReply();
     if (ok && stopStandby) {
@@ -327,7 +333,7 @@ export function App() {
           }}
           core={<CommandCore view={view} readLevel={readCoreLevel} burstKey={burstKey} pulseKey={pulseKey} detail={remaining} />}
         />
-        {view.notice && <p className="stage-notice">{view.notice}</p>}
+        {(clap.guardNotice ?? view.notice) && <p className="stage-notice">{clap.guardNotice ?? view.notice}</p>}
       </main>
       <CommandBar
         wakeOn={wake.on}
