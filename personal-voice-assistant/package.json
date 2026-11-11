@@ -1,6 +1,6 @@
 {
   "name": "personal-voice-assistant",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "自分専用AI秘書（日本語音声・ローカルMVP）",
   "scripts": {
     "dev": "concurrently -k -n server,web -c blue,green \"npm:dev:server\" \"npm:dev:web\"",
