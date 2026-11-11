@@ -2382,3 +2382,11 @@ input[type='range']::-moz-range-thumb {
   gap: 12px;
   margin-top: 12px;
 }
+
+/* 拍手：2 回の並びの結果（1 回ずつは ✓ でも取り消されることがある） */
+.k-seq-warn {
+  color: var(--gold);
+}
+.k-seq-ok {
+  color: var(--text);
+}

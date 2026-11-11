@@ -40,7 +40,7 @@ export function InfoPanel({ wake, clap, lines, connected, errors, notice, latenc
           <span>認識結果</span>
           <span className="k-card-en">LAST DETECTION</span>
         </h2>
-        {latest ? <LatestDecision item={latest} /> : <p className="k-empty">判定なし</p>}
+        {latest ? <LatestDecision item={latest} sequence={latest.src === 'clap' ? clapSequenceAfter(clap.standby.log, latest.at) : null} /> : <p className="k-empty">判定なし</p>}
       </section>
 
       <section className="k-card k-card-grow">
@@ -120,7 +120,16 @@ export function InfoPanel({ wake, clap, lines, connected, errors, notice, latenc
   );
 }
 
-function LatestDecision({ item }: { item: Item }) {
+/**
+ * 拍手 1 回ずつの判定のあとの「2 回の並び」の結果（間隔・大きさの差・3 回目の音など）。
+ * 1 回ずつは ✓ でも並びで取り消されることがあるため、最新の判定と一緒に表示する
+ */
+function clapSequenceAfter(log: LogEntry[], at: number): { tone: 'ok' | 'warn' | 'info'; text: string } | null {
+  const e = log.find((x) => x.kind === 'note' && x.at >= at - 100);
+  return e && e.kind === 'note' ? { tone: e.tone, text: e.text } : null;
+}
+
+function LatestDecision({ item, sequence }: { item: Item; sequence?: { tone: 'ok' | 'warn' | 'info'; text: string } | null }) {
   if (item.src === 'wake' && item.e.kind === 'decision') {
     const d = item.e.decision;
     return (
@@ -153,6 +162,11 @@ function LatestDecision({ item }: { item: Item }) {
           <span className="k-decision-meta">{new Date(item.at).toLocaleTimeString('ja-JP')}</span>
         </div>
         {s.reason && <p className="k-reason">理由：{s.reason}</p>}
+        {s.accepted && sequence && (
+          <p className={`k-reason k-seq-${sequence.tone}`}>
+            2回の並び：{sequence.text.replace(/^取り消し：/, '起動しませんでした — ')}
+          </p>
+        )}
         <ul className="k-checks">
           {s.checks.map((c) => (
             <li key={c.key} className={c.pass ? 'pass' : 'fail'}>
